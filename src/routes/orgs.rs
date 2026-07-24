@@ -46,7 +46,9 @@ async fn fiducia_org_claim_guard(
     match acquired {
         Ok(Ok(pair)) => Some(pair),
         Ok(Err(err)) => {
-            tracing::warn!("fiducia org-claim lock unavailable, relying on pg advisory lock: {err}");
+            tracing::warn!(
+                "fiducia org-claim lock unavailable, relying on pg advisory lock: {err}"
+            );
             None
         }
         Err(join_err) => {
@@ -60,7 +62,9 @@ fn release_fiducia_guard(guard: Option<(Arc<FiduciaClient>, LockHandle)>) {
     if let Some((client, handle)) = guard {
         tokio::task::spawn_blocking(move || {
             if let Err(err) = client.release_lock(&handle) {
-                tracing::warn!("fiducia org-claim release failed (lease TTL is the backstop): {err:?}");
+                tracing::warn!(
+                    "fiducia org-claim release failed (lease TTL is the backstop): {err:?}"
+                );
             }
         });
     }
@@ -183,7 +187,9 @@ mod tests {
 
     async fn test_state() -> Arc<AppState> {
         let mut opts = ConnectOptions::new("sqlite::memory:".to_string());
-        opts.max_connections(1).min_connections(1).sqlx_logging(false);
+        opts.max_connections(1)
+            .min_connections(1)
+            .sqlx_logging(false);
         let db: DatabaseConnection = Database::connect(opts).await.unwrap();
         let backend = db.get_database_backend();
         let schema = Schema::new(backend);
