@@ -94,12 +94,40 @@ pub async fn claim_org(
             format!("org `{}` is already claimed", request.slug),
         ));
     }
+    // The quota check has no unique-index backstop ("≤ K rows per token" is
+    // inexpressible as a constraint), so the count and the insert must be one
+    // critical section. Two layers, per docs: an OUTER fiducia lock queueing
+    // claims for this token across replicas, and INSIDE it a Postgres
+    // advisory xact lock owning correctness even if fiducia is down.
+    let fiducia_guard = fiducia_org_claim_guard(&state, token.id).await;
+    let outcome = claim_org_serialized(&state, &token, &request).await;
+    release_fiducia_guard(fiducia_guard);
+    outcome
+}
+
+async fn claim_org_serialized(
+    state: &AppState,
+    token: &crate::entities::token::Model,
+    request: &ClaimOrgRequest,
+) -> ApiResult<Json<ClaimOrgResponse>> {
+    let txn = state.db.begin().await?;
+    // Advisory lock, xact-scoped (auto-released on commit/rollback/crash),
+    // keyed per token — mirrors the zed-sync outbox pattern. Postgres only;
+    // the sqlite used in unit tests is single-connection and needs none.
+    if state.db.get_database_backend() == DbBackend::Postgres {
+        txn.execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT pg_advisory_xact_lock(hashtext($1))",
+            [format!("zed-api:org-claim:{}", token.id).into()],
+        ))
+        .await?;
+    }
     // Squatting quota: org-scoped tokens may only claim a bounded number of
     // namespaces; admin tokens (org_id = None) are exempt.
     if token.org_id.is_some() {
         let claimed = org::Entity::find()
             .filter(org::Column::CreatedByToken.eq(token.id))
-            .count(&state.db)
+            .count(&txn)
             .await?;
         if claimed >= state.max_orgs_per_token {
             return Err(ApiErr {
@@ -118,7 +146,7 @@ pub async fn claim_org(
         created_at: ActiveValue::Set(Utc::now()),
         created_by_token: ActiveValue::Set(Some(token.id)),
     }
-    .insert(&state.db)
+    .insert(&txn)
     .await;
     if let Err(err) = insert {
         // A concurrent claim can win the unique `slug` index between the check
@@ -132,8 +160,9 @@ pub async fn claim_org(
         }
         return Err(err.into());
     }
+    txn.commit().await?;
     Ok(Json(ClaimOrgResponse {
-        slug: request.slug,
+        slug: request.slug.clone(),
         created: true,
     }))
 }
