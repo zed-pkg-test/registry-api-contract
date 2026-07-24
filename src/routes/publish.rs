@@ -93,26 +93,43 @@ pub async fn publish(
         TagCheck::Verified { .. } | TagCheck::Skipped => {}
     }
 
-    let pkg = upsert_package(&state, &org_row, &name, &meta).await?;
-
-    let exists = version::Entity::find()
-        .filter(version::Column::PackageId.eq(pkg.id))
-        .filter(version::Column::Version.eq(&ver))
-        .one(&state.db)
-        .await?;
-    if exists.is_some() {
-        return Err(ApiErr::conflict(
-            "version_exists",
-            format!("{org_slug}/{name}@{ver} is already published; versions are immutable"),
-        ));
+    // Immutability is checked BEFORE any metadata mutation: if this exact
+    // version already exists the publish is a no-op conflict and must not
+    // rewrite the package's description/vcs/repo_url (M1). The package may not
+    // exist yet (first publish), in which case no version can exist either.
+    if let Some(pkg) = find_package_row(&state, &org_row, &name).await? {
+        let exists = version::Entity::find()
+            .filter(version::Column::PackageId.eq(pkg.id))
+            .filter(version::Column::Version.eq(&ver))
+            .one(&state.db)
+            .await?;
+        if exists.is_some() {
+            return Err(ApiErr::conflict(
+                "version_exists",
+                format!("{org_slug}/{name}@{ver} is already published; versions are immutable"),
+            ));
+        }
     }
 
+    // Store the blob before recording the row that references it.
     let key = artifact_key(&actual_sha, meta.format.extension());
     state
         .store
         .put(&key, artifact.to_vec(), meta.format.content_type())
         .await?;
 
+    // Upsert the package metadata and insert the version atomically: a failed
+    // version insert must never leave the package metadata rewritten (M1). Any
+    // failure past the blob `put` must also drop the just-stored blob (L3).
+    let txn = state.db.begin().await?;
+    let pkg = match upsert_package(&txn, &org_row, &name, &meta).await {
+        Ok(pkg) => pkg,
+        Err(err) => {
+            let _ = txn.rollback().await;
+            cleanup_unreferenced_blob(&state, &key).await;
+            return Err(err);
+        }
+    };
     let inserted = version::ActiveModel {
         id: ActiveValue::Set(Uuid::new_v4()),
         package_id: ActiveValue::Set(pkg.id),
@@ -126,20 +143,26 @@ pub async fn publish(
         yanked: ActiveValue::Set(false),
         published_at: ActiveValue::Set(Utc::now()),
     }
-    .insert(&state.db)
+    .insert(&txn)
     .await;
-    if let Err(err) = inserted {
-        // A concurrent publish can win the (package_id, version) unique index
-        // between the `exists` check above and this insert; that is the same
-        // immutability conflict, not an internal error.
-        if matches!(err.sql_err(), Some(SqlErr::UniqueConstraintViolation(_))) {
+    match inserted {
+        Ok(_) => txn.commit().await?,
+        Err(err) => {
+            // Roll the metadata upsert back and drop the orphaned blob on every
+            // failure path (L3), then classify the error.
+            let _ = txn.rollback().await;
             cleanup_unreferenced_blob(&state, &key).await;
-            return Err(ApiErr::conflict(
-                "version_exists",
-                format!("{org_slug}/{name}@{ver} is already published; versions are immutable"),
-            ));
+            // A concurrent publish can win the (package_id, version) unique
+            // index between the check above and this insert; that is the same
+            // immutability conflict, not an internal error.
+            if matches!(err.sql_err(), Some(SqlErr::UniqueConstraintViolation(_))) {
+                return Err(ApiErr::conflict(
+                    "version_exists",
+                    format!("{org_slug}/{name}@{ver} is already published; versions are immutable"),
+                ));
+            }
+            return Err(err.into());
         }
-        return Err(err.into());
     }
 
     tracing::info!(org = %org_slug, name = %name, version = %ver, sha256 = %actual_sha, "published");
