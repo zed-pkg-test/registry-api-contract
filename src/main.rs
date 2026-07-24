@@ -10,10 +10,11 @@ mod tokens;
 mod verify;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use migration::MigratorTrait;
-use sea_orm::Database;
+use sea_orm::{ConnectOptions, Database};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
@@ -34,7 +35,13 @@ async fn main() -> Result<()> {
     }
 
     let cfg = Config::from_env()?;
-    let db = Database::connect(&cfg.database_url)
+    let mut connect_opts = ConnectOptions::new(cfg.database_url.clone());
+    connect_opts
+        .max_connections(cfg.db_max_connections)
+        .connect_timeout(Duration::from_secs(5))
+        .acquire_timeout(Duration::from_secs(8))
+        .sqlx_logging(false);
+    let db = Database::connect(connect_opts)
         .await
         .context("failed to connect to DATABASE_URL")?;
     if cfg.auto_migrate {
@@ -48,6 +55,7 @@ async fn main() -> Result<()> {
         store,
         verifier: TagVerifier::new(cfg.verify_tags),
         public_base_url: cfg.public_base_url.trim_end_matches('/').to_string(),
+        max_orgs_per_token: cfg.max_orgs_per_token,
     });
 
     let app = routes::router(state, cfg.max_artifact_bytes);

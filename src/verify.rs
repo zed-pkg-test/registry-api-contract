@@ -1,7 +1,16 @@
 use anyhow::Result;
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use zed_interfaces::vcs::Vcs;
 
 use crate::config::TagPolicy;
+
+/// Tags go into a URL path segment: encode everything but RFC 3986
+/// unreserved characters so `/`, `?`, `#`, … cannot alter the request.
+const TAG_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
 
 #[derive(Debug, PartialEq)]
 pub enum TagCheck {
@@ -51,6 +60,7 @@ impl TagVerifier {
             );
             return Ok(TagCheck::Skipped);
         };
+        let tag = utf8_percent_encode(tag, TAG_ENCODE_SET);
         let url = format!("https://api.github.com/repos/{owner}/{repo}/git/ref/tags/{tag}");
         let mut request = self.client.get(&url);
         if let Some(token) = &self.github_token {
@@ -107,5 +117,13 @@ mod tests {
         );
         assert_eq!(parse_github("https://gitlab.com/acme/x"), None);
         assert_eq!(parse_github("https://github.com/acme"), None);
+    }
+
+    #[test]
+    fn tags_are_percent_encoded_for_urls() {
+        let enc = |tag: &str| utf8_percent_encode(tag, TAG_ENCODE_SET).to_string();
+        assert_eq!(enc("v1.2.0"), "v1.2.0");
+        assert_eq!(enc("release_1~rc"), "release_1~rc");
+        assert_eq!(enc("a/b?x=1#f"), "a%2Fb%3Fx%3D1%23f");
     }
 }

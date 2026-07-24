@@ -8,6 +8,9 @@ pub struct Model {
     #[sea_orm(unique)]
     pub slug: String,
     pub created_at: DateTimeUtc,
+    /// Token that claimed this org via the API (None for CLI-minted or
+    /// pre-quota orgs); feeds the per-token claim quota.
+    pub created_by_token: Option<Uuid>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

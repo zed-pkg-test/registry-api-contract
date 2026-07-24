@@ -11,6 +11,8 @@ pub struct Config {
     pub public_base_url: String,
     pub verify_tags: TagPolicy,
     pub max_artifact_bytes: usize,
+    pub max_orgs_per_token: u64,
+    pub db_max_connections: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +69,12 @@ impl Config {
             max_artifact_bytes: env_or("MAX_ARTIFACT_BYTES", "104857600")
                 .parse()
                 .context("MAX_ARTIFACT_BYTES must be a number")?,
+            max_orgs_per_token: env_or("ZED_MAX_ORGS_PER_TOKEN", "5")
+                .parse()
+                .context("ZED_MAX_ORGS_PER_TOKEN must be a number")?,
+            db_max_connections: env_or("DB_MAX_CONNECTIONS", "10")
+                .parse()
+                .context("DB_MAX_CONNECTIONS must be a number")?,
         })
     }
 }

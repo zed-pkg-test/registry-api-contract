@@ -20,6 +20,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
 flate2 = "1"
 hex = "0.4"
+percent-encoding = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sea-orm = { version = "1", features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-chrono", "with-uuid"] }
 semver = "1"
@@ -28,10 +29,13 @@ serde_json = "1"
 sha2 = "0.10"
 tar = "0.4"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["trace"] }
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.6", features = ["set-header", "timeout", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+# Read-side only; deflate decoding reuses the flate2 backend already in-tree.
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

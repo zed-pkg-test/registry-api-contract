@@ -8,4 +8,5 @@ pub struct AppState {
     pub store: ArtifactStore,
     pub verifier: TagVerifier,
     pub public_base_url: String,
+    pub max_orgs_per_token: u64,
 }
