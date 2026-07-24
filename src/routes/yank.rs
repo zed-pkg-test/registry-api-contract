@@ -251,6 +251,8 @@ mod tests {
             org_id: ActiveValue::Set(Some(foreign_org)),
             role: ActiveValue::Set("owner".to_string()),
             created_at: ActiveValue::Set(Utc::now()),
+            expires_at: ActiveValue::Set(None),
+            revoked_at: ActiveValue::Set(None),
         }
         .insert(&state.db)
         .await
