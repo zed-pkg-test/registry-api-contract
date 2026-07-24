@@ -24,12 +24,15 @@ pub async fn yank(
 ) -> ApiResult<Json<YankResponse>> {
     let token = require_token(&state.db, &headers).await?;
     let org_row = find_org(&state, &org_slug).await?;
-    // Same rule as publish: admin tokens (no scope) or tokens scoped to this org.
-    if let Some(scope) = token.org_id {
-        if scope != org_row.id {
-            return Err(ApiErr::unauthorized());
-        }
-    }
+    // Yank/un-yank is a mutation of published state: same authority as publish.
+    // Route through the shared authorizer so scope AND role stay enforced here
+    // (a reader token must not be able to yank or restore versions) and cannot
+    // drift apart from the publish path.
+    crate::rbac::authorize_publish(
+        token.org_id,
+        crate::rbac::Role::parse(&token.role),
+        org_row.id,
+    )?;
     let pkg = find_package(&state, &org_row, &name).await?;
     let row = version::Entity::find()
         .filter(version::Column::PackageId.eq(pkg.id))
