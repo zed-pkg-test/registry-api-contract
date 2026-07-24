@@ -1,13 +1,16 @@
 //! Namespace claiming.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use chrono::Utc;
+use fiducia_client::{FiduciaClient, LockHandle, LockOptions};
 use sea_orm::{
-    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, SqlErr,
+    ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, DbBackend, EntityTrait,
+    PaginatorTrait, QueryFilter, SqlErr, Statement, TransactionTrait,
 };
 use uuid::Uuid;
 use zed_interfaces::manifest::is_slug;
@@ -17,6 +20,51 @@ use crate::auth::require_token;
 use crate::entities::org;
 use crate::error::{ApiErr, ApiResult};
 use crate::state::AppState;
+
+/// Outer distributed lock for a token's claim: cross-replica FIFO queueing on
+/// `zed-api/org-claim/{token_id}`. FAIL-OPEN by design — the advisory xact
+/// lock inside the claim transaction is the correctness guarantee; fiducia
+/// adds fair queueing across replicas and lock observability. A short TTL is
+/// the crash backstop; release is best-effort.
+async fn fiducia_org_claim_guard(
+    state: &AppState,
+    token_id: Uuid,
+) -> Option<(Arc<FiduciaClient>, LockHandle)> {
+    let client = state.fiducia.clone()?;
+    let key = format!("zed-api/org-claim/{token_id}");
+    let acquired = tokio::task::spawn_blocking(move || {
+        let opts = LockOptions {
+            ttl_ms: 15_000,
+            max_wait: Duration::from_secs(5),
+            ..LockOptions::default()
+        };
+        client
+            .acquire_lock_handle(&[key.as_str()], opts)
+            .map(|handle| (client, handle))
+    })
+    .await;
+    match acquired {
+        Ok(Ok(pair)) => Some(pair),
+        Ok(Err(err)) => {
+            tracing::warn!("fiducia org-claim lock unavailable, relying on pg advisory lock: {err}");
+            None
+        }
+        Err(join_err) => {
+            tracing::warn!("fiducia org-claim lock task failed: {join_err}");
+            None
+        }
+    }
+}
+
+fn release_fiducia_guard(guard: Option<(Arc<FiduciaClient>, LockHandle)>) {
+    if let Some((client, handle)) = guard {
+        tokio::task::spawn_blocking(move || {
+            if let Err(err) = client.release_lock(&handle) {
+                tracing::warn!("fiducia org-claim release failed (lease TTL is the backstop): {err:?}");
+            }
+        });
+    }
+}
 
 pub async fn claim_org(
     State(state): State<Arc<AppState>>,
