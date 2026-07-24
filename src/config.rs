@@ -13,6 +13,7 @@ pub struct Config {
     pub max_artifact_bytes: usize,
     pub max_orgs_per_token: u64,
     pub db_max_connections: u32,
+    pub fiducia: Option<FiduciaConfig>,
 }
 
 /// Optional fiducia lock service for distributed locks (see routes/orgs.rs).
