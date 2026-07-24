@@ -39,3 +39,7 @@ zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# SQLite is pulled in only for tests (dev-dependencies are excluded from
+# `cargo build --release`), giving publish/claim handlers a real in-memory
+# database to exercise transaction/immutability behavior against.
+sea-orm = { version = "1", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "with-chrono", "with-uuid"] }
