@@ -215,6 +215,7 @@ mod tests {
             name: ActiveValue::Set("t".to_string()),
             token_hash: ActiveValue::Set(hash_token(plaintext)),
             org_id: ActiveValue::Set(org_id),
+            role: ActiveValue::Set("owner".to_string()),
             created_at: ActiveValue::Set(Utc::now()),
         }
         .insert(db)
