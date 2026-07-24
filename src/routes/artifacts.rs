@@ -58,8 +58,7 @@ pub async fn get_file(
         .await?
         .ok_or_else(|| ApiErr::not_found("version"))?;
     let archive = state.store.get_bytes(&row.artifact_key).await?;
-    let file = files::extract_file(&archive, &path)
-        .map_err(anyhow::Error::from)?
+    let file = files::extract_file(&archive, artifact_format(&row.format), &path)?
         .ok_or_else(|| ApiErr::not_found("file"))?;
     Ok((
         StatusCode::OK,
