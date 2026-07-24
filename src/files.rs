@@ -1,24 +1,81 @@
 //! unpkg-style edge serving of package contents: extract one file from a
 //! stored artifact so the web can consume packages without installing them.
 
-use std::io::Read;
+use std::io::{Cursor, Read};
 
-use anyhow::Result;
 use flate2::read::GzDecoder;
+use zed_interfaces::artifact::ArtifactFormat;
 
-/// Find `pkg/<rel_path>` inside a tar.gz artifact.
-pub fn extract_file(archive: &[u8], rel_path: &str) -> Result<Option<Vec<u8>>> {
-    let mut tar = tar::Archive::new(GzDecoder::new(archive));
+/// Largest single file served out of an artifact. Also the allocation cap:
+/// archive headers declare sizes and are attacker-controlled, so they are
+/// never trusted for buffer sizing.
+pub const MAX_SERVED_FILE_BYTES: u64 = 25 * 1024 * 1024;
+
+#[derive(Debug)]
+pub enum ExtractError {
+    /// The entry is larger than [`MAX_SERVED_FILE_BYTES`] (declared or actual).
+    TooLarge,
+    /// The archive could not be read.
+    Archive(anyhow::Error),
+}
+
+impl From<std::io::Error> for ExtractError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Archive(err.into())
+    }
+}
+
+impl From<zip::result::ZipError> for ExtractError {
+    fn from(err: zip::result::ZipError) -> Self {
+        Self::Archive(err.into())
+    }
+}
+
+/// Find `pkg/<rel_path>` inside a stored artifact of the given format.
+pub fn extract_file(
+    archive: &[u8],
+    format: ArtifactFormat,
+    rel_path: &str,
+) -> Result<Option<Vec<u8>>, ExtractError> {
     let want = format!("{}/{rel_path}", zed_interfaces::paths::ARCHIVE_ROOT);
-    for entry in tar.entries()? {
-        let mut entry = entry?;
-        if entry.path()?.to_string_lossy() == want {
-            let mut buf = Vec::with_capacity(entry.size() as usize);
-            entry.read_to_end(&mut buf)?;
-            return Ok(Some(buf));
+    match format {
+        ArtifactFormat::TarGz => {
+            let mut tar = tar::Archive::new(GzDecoder::new(archive));
+            for entry in tar.entries()? {
+                let entry = entry?;
+                if entry.path()?.to_string_lossy() == want {
+                    if entry.size() > MAX_SERVED_FILE_BYTES {
+                        return Err(ExtractError::TooLarge);
+                    }
+                    return Ok(Some(read_capped(entry)?));
+                }
+            }
+            Ok(None)
+        }
+        ArtifactFormat::Zip => {
+            let mut zip = zip::ZipArchive::new(Cursor::new(archive))?;
+            let entry = match zip.by_name(&want) {
+                Ok(entry) => entry,
+                Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+                Err(err) => return Err(err.into()),
+            };
+            if entry.size() > MAX_SERVED_FILE_BYTES {
+                return Err(ExtractError::TooLarge);
+            }
+            Ok(Some(read_capped(entry)?))
         }
     }
-    Ok(None)
+}
+
+/// Read a whole entry without trusting its declared size: never allocate up
+/// front, stop at the cap + 1, and reject if the actual bytes exceed the cap.
+fn read_capped<R: Read>(reader: R) -> Result<Vec<u8>, ExtractError> {
+    let mut buf = Vec::new();
+    std::io::copy(&mut reader.take(MAX_SERVED_FILE_BYTES + 1), &mut buf)?;
+    if buf.len() as u64 > MAX_SERVED_FILE_BYTES {
+        return Err(ExtractError::TooLarge);
+    }
+    Ok(buf)
 }
 
 pub fn mime_for(path: &str) -> &'static str {
@@ -41,6 +98,8 @@ pub fn mime_for(path: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
     use flate2::Compression;
     use flate2::write::GzEncoder;
@@ -59,12 +118,57 @@ mod tests {
         builder.into_inner().unwrap().finish().unwrap()
     }
 
+    fn tiny_zip() -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("pkg/dist/style.css", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"body { color: orange }").unwrap();
+        writer.finish().unwrap().into_inner()
+    }
+
+    /// A tar.gz whose only entry declares `declared` bytes but carries none:
+    /// the size cap must trip on the header alone, before any allocation.
+    fn lying_archive(declared: u64) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut header = tar::Header::new_gnu();
+        header.set_path("pkg/huge.bin").unwrap();
+        header.set_size(declared);
+        header.set_mode(0o644);
+        header.set_cksum();
+        encoder.write_all(header.as_bytes()).unwrap();
+        encoder.finish().unwrap()
+    }
+
     #[test]
     fn extracts_by_relative_path() {
         let archive = tiny_archive();
-        let found = extract_file(&archive, "dist/style.css").unwrap();
+        let found = extract_file(&archive, ArtifactFormat::TarGz, "dist/style.css").unwrap();
         assert_eq!(found.unwrap(), b"body { color: orange }");
-        assert!(extract_file(&archive, "missing.css").unwrap().is_none());
+        assert!(
+            extract_file(&archive, ArtifactFormat::TarGz, "missing.css")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn zip_extracts_by_relative_path() {
+        let archive = tiny_zip();
+        let found = extract_file(&archive, ArtifactFormat::Zip, "dist/style.css").unwrap();
+        assert_eq!(found.unwrap(), b"body { color: orange }");
+        assert!(
+            extract_file(&archive, ArtifactFormat::Zip, "missing.css")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rejects_oversized_declared_entry() {
+        let archive = lying_archive(MAX_SERVED_FILE_BYTES + 1);
+        let err = extract_file(&archive, ArtifactFormat::TarGz, "huge.bin").unwrap_err();
+        assert!(matches!(err, ExtractError::TooLarge));
     }
 
     #[test]
