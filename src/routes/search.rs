@@ -66,3 +66,32 @@ pub async fn search(
         items,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn like_escaping_neutralizes_wildcards() {
+        assert_eq!(escape_like("plain"), "plain");
+        assert_eq!(escape_like("50%_off"), r"50\%\_off");
+        assert_eq!(escape_like(r"back\slash"), r"back\\slash");
+        assert_eq!(escape_like(r"\%"), r"\\\%");
+    }
+
+    /// The filter must compile to a parameterized LIKE with an ESCAPE clause,
+    /// never inlined user input.
+    #[test]
+    fn search_filter_uses_escape_clause() {
+        use sea_orm::{DbBackend, QueryFilter, QueryTrait};
+        let query = package::Entity::find()
+            .filter(package::Column::Name.like(contains_escaped("50%_off")))
+            .build(DbBackend::Postgres);
+        assert!(query.sql.contains("LIKE $1 ESCAPE '\\'"), "{}", query.sql);
+        let values = query.values.expect("bind values");
+        assert_eq!(
+            format!("{:?}", values.0[0]),
+            format!("{:?}", sea_orm::Value::from(r"%50\%\_off%"))
+        );
+    }
+}
