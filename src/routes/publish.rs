@@ -112,7 +112,7 @@ pub async fn publish(
         .put(&key, artifact.to_vec(), meta.format.content_type())
         .await?;
 
-    version::ActiveModel {
+    let inserted = version::ActiveModel {
         id: ActiveValue::Set(Uuid::new_v4()),
         package_id: ActiveValue::Set(pkg.id),
         version: ActiveValue::Set(ver.clone()),
@@ -121,12 +121,25 @@ pub async fn publish(
         format: ActiveValue::Set(meta.format.extension().to_string()),
         vcs_tag: ActiveValue::Set(meta.vcs_tag.clone()),
         vcs_commit: ActiveValue::Set(meta.vcs_commit.clone()),
-        artifact_key: ActiveValue::Set(key),
+        artifact_key: ActiveValue::Set(key.clone()),
         yanked: ActiveValue::Set(false),
         published_at: ActiveValue::Set(Utc::now()),
     }
     .insert(&state.db)
-    .await?;
+    .await;
+    if let Err(err) = inserted {
+        // A concurrent publish can win the (package_id, version) unique index
+        // between the `exists` check above and this insert; that is the same
+        // immutability conflict, not an internal error.
+        if matches!(err.sql_err(), Some(SqlErr::UniqueConstraintViolation(_))) {
+            cleanup_unreferenced_blob(&state, &key).await;
+            return Err(ApiErr::conflict(
+                "version_exists",
+                format!("{org_slug}/{name}@{ver} is already published; versions are immutable"),
+            ));
+        }
+        return Err(err.into());
+    }
 
     tracing::info!(org = %org_slug, name = %name, version = %ver, sha256 = %actual_sha, "published");
     Ok(Json(PublishResponse {
