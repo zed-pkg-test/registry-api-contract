@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use chrono::Utc;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter,
+    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, SqlErr,
 };
 use uuid::Uuid;
 use zed_interfaces::manifest::is_slug;
@@ -64,16 +64,146 @@ pub async fn claim_org(
             });
         }
     }
-    org::ActiveModel {
+    let insert = org::ActiveModel {
         id: ActiveValue::Set(Uuid::new_v4()),
         slug: ActiveValue::Set(request.slug.clone()),
         created_at: ActiveValue::Set(Utc::now()),
         created_by_token: ActiveValue::Set(Some(token.id)),
     }
     .insert(&state.db)
-    .await?;
+    .await;
+    if let Err(err) = insert {
+        // A concurrent claim can win the unique `slug` index between the check
+        // above and this insert; that is the same conflict as an already-claimed
+        // org, not an internal error (M6).
+        if matches!(err.sql_err(), Some(SqlErr::UniqueConstraintViolation(_))) {
+            return Err(ApiErr::conflict(
+                "org_taken",
+                format!("org `{}` is already claimed", request.slug),
+            ));
+        }
+        return Err(err.into());
+    }
     Ok(Json(ClaimOrgResponse {
         slug: request.slug,
         created: true,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::State;
+    use sea_orm::{
+        ConnectOptions, ConnectionTrait, Database, DatabaseConnection, EntityTrait, Schema,
+    };
+
+    use crate::auth::hash_token;
+    use crate::config::{StorageConfig, TagPolicy};
+    use crate::entities::token;
+    use crate::storage::ArtifactStore;
+    use crate::verify::TagVerifier;
+
+    async fn test_state() -> Arc<AppState> {
+        let mut opts = ConnectOptions::new("sqlite::memory:".to_string());
+        opts.max_connections(1).min_connections(1).sqlx_logging(false);
+        let db: DatabaseConnection = Database::connect(opts).await.unwrap();
+        let backend = db.get_database_backend();
+        let schema = Schema::new(backend);
+        for stmt in [
+            schema.create_table_from_entity(org::Entity),
+            schema.create_table_from_entity(token::Entity),
+        ] {
+            db.execute(backend.build(&stmt)).await.unwrap();
+        }
+        let dir = std::env::temp_dir().join(format!("zed-api-org-test-{}", Uuid::new_v4()));
+        Arc::new(AppState {
+            db,
+            store: ArtifactStore::from_config(&StorageConfig::Local {
+                dir: dir.to_string_lossy().to_string(),
+            })
+            .await
+            .unwrap(),
+            verifier: TagVerifier::new(TagPolicy::Off),
+            public_base_url: "http://localhost:8080".to_string(),
+            max_orgs_per_token: 5,
+        })
+    }
+
+    async fn seed_token(db: &DatabaseConnection, plaintext: &str, org_id: Option<Uuid>) -> Uuid {
+        let id = Uuid::new_v4();
+        token::ActiveModel {
+            id: ActiveValue::Set(id),
+            name: ActiveValue::Set("t".to_string()),
+            token_hash: ActiveValue::Set(hash_token(plaintext)),
+            org_id: ActiveValue::Set(org_id),
+            created_at: ActiveValue::Set(Utc::now()),
+        }
+        .insert(db)
+        .await
+        .unwrap();
+        id
+    }
+
+    fn bearer(plaintext: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {plaintext}").parse().unwrap(),
+        );
+        headers
+    }
+
+    /// M6: claiming an org already owned by a different token is a clean 409
+    /// `org_taken`, never a 500.
+    #[tokio::test]
+    async fn claiming_a_taken_org_conflicts() {
+        let state = test_state().await;
+        let token_a = seed_token(&state.db, "admin_a", None).await;
+        let _token_b = seed_token(&state.db, "admin_b", None).await;
+        org::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            slug: ActiveValue::Set("acme".to_string()),
+            created_at: ActiveValue::Set(Utc::now()),
+            created_by_token: ActiveValue::Set(Some(token_a)),
+        }
+        .insert(&state.db)
+        .await
+        .unwrap();
+
+        let err = claim_org(
+            State(state.clone()),
+            bearer("admin_b"),
+            Json(ClaimOrgRequest {
+                slug: "acme".to_string(),
+            }),
+        )
+        .await
+        .expect_err("claiming a taken org must fail");
+        assert_eq!(err.status, StatusCode::CONFLICT);
+        assert_eq!(err.code, "org_taken");
+    }
+
+    /// A brand-new slug is claimed successfully.
+    #[tokio::test]
+    async fn claiming_a_free_org_succeeds() {
+        let state = test_state().await;
+        seed_token(&state.db, "admin_a", None).await;
+
+        let resp = claim_org(
+            State(state.clone()),
+            bearer("admin_a"),
+            Json(ClaimOrgRequest {
+                slug: "acme".to_string(),
+            }),
+        )
+        .await
+        .expect("claiming a free org succeeds");
+        assert!(resp.0.created);
+        assert_eq!(
+            org::Entity::find().all(&state.db).await.unwrap().len(),
+            1,
+            "exactly one org row is created"
+        );
+    }
 }

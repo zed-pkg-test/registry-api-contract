@@ -60,6 +60,12 @@ impl TagVerifier {
             );
             return Ok(TagCheck::Skipped);
         };
+        // `owner`/`repo` are already restricted to [A-Za-z0-9._-] by
+        // `parse_github`; encode them with the same set as the tag anyway so a
+        // future parser change cannot smuggle path-altering characters into the
+        // GitHub API request (M4).
+        let owner = utf8_percent_encode(&owner, TAG_ENCODE_SET);
+        let repo = utf8_percent_encode(&repo, TAG_ENCODE_SET);
         let tag = utf8_percent_encode(tag, TAG_ENCODE_SET);
         let url = format!("https://api.github.com/repos/{owner}/{repo}/git/ref/tags/{tag}");
         let mut request = self.client.get(&url);
@@ -79,6 +85,17 @@ impl TagVerifier {
     }
 }
 
+/// A GitHub owner or repo segment is safe to interpolate into an API path only
+/// if it is non-empty, made solely of `[A-Za-z0-9._-]`, and not a bare `.`/`..`
+/// (or any all-dots string) that could traverse the request path (M4).
+fn valid_repo_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && !segment.trim_matches('.').is_empty()
+}
+
 /// `https://github.com/{owner}/{repo}[.git]` -> (owner, repo)
 pub fn parse_github(repo_url: &str) -> Option<(String, String)> {
     let rest = repo_url
@@ -89,7 +106,9 @@ pub fn parse_github(repo_url: &str) -> Option<(String, String)> {
     let mut parts = rest.splitn(2, '/');
     match (parts.next(), parts.next()) {
         (Some(owner), Some(repo))
-            if !owner.is_empty() && !repo.is_empty() && !repo.contains('/') =>
+            if !repo.contains('/')
+                && valid_repo_segment(owner)
+                && valid_repo_segment(repo) =>
         {
             Some((owner.to_string(), repo.to_string()))
         }
@@ -117,6 +136,23 @@ mod tests {
         );
         assert_eq!(parse_github("https://gitlab.com/acme/x"), None);
         assert_eq!(parse_github("https://github.com/acme"), None);
+    }
+
+    #[test]
+    fn rejects_path_traversal_owner_and_repo() {
+        // Path-traversal segments must never reach the GitHub API request (M4).
+        assert_eq!(parse_github("https://github.com/../evil/foo"), None);
+        assert_eq!(parse_github("https://github.com/../foo"), None);
+        assert_eq!(parse_github("https://github.com/acme/.."), None);
+        assert_eq!(parse_github("https://github.com/./foo"), None);
+        // Characters outside [A-Za-z0-9._-] are rejected too.
+        assert_eq!(parse_github("https://github.com/ac me/foo"), None);
+        assert_eq!(parse_github("https://github.com/acme/foo%2e"), None);
+        // A dotted-but-not-all-dots name is still fine.
+        assert_eq!(
+            parse_github("https://github.com/acme/foo.bar"),
+            Some(("acme".into(), "foo.bar".into()))
+        );
     }
 
     #[test]

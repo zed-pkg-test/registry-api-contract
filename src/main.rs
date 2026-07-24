@@ -33,6 +33,9 @@ async fn main() -> Result<()> {
     if args.get(1).map(String::as_str) == Some("create-token") {
         return tokens::create_token(&args[2..]).await;
     }
+    if args.get(1).map(String::as_str) == Some("healthcheck") {
+        return healthcheck().await;
+    }
 
     let cfg = Config::from_env()?;
     let mut connect_opts = ConnectOptions::new(cfg.database_url.clone());
@@ -63,4 +66,24 @@ async fn main() -> Result<()> {
     tracing::info!("zed-api-server listening on {}", cfg.bind_addr);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// `zed-api-server healthcheck`: probe the local `/healthz` endpoint and exit
+/// non-zero if it is not healthy. Used by the container HEALTHCHECK, which has
+/// no `curl`/`wget` in the slim runtime image.
+async fn healthcheck() -> Result<()> {
+    let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+    let port = bind.rsplit(':').next().unwrap_or("8080");
+    let url = format!("http://127.0.0.1:{port}/healthz");
+    let response = reqwest::Client::new()
+        .get(&url)
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+        .context("healthcheck request failed")?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        anyhow::bail!("healthcheck returned HTTP {}", response.status());
+    }
 }
