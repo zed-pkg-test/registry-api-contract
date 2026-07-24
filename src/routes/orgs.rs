@@ -262,6 +262,44 @@ mod tests {
         assert_eq!(err.code, "org_taken");
     }
 
+    /// The squatting quota is enforced atomically inside the claim
+    /// transaction: the (K+1)th claim by one token is a clean 403.
+    #[tokio::test]
+    async fn org_quota_is_enforced() {
+        let state = test_state().await;
+        let org_id = Uuid::new_v4();
+        seed_token(&state.db, "scoped", Some(org_id)).await;
+
+        for i in 0..5 {
+            let resp = claim_org(
+                State(state.clone()),
+                bearer("scoped"),
+                Json(ClaimOrgRequest {
+                    slug: format!("org-{i}"),
+                }),
+            )
+            .await
+            .expect("claims under the quota succeed");
+            assert!(resp.0.created);
+        }
+        let err = claim_org(
+            State(state.clone()),
+            bearer("scoped"),
+            Json(ClaimOrgRequest {
+                slug: "one-too-many".to_string(),
+            }),
+        )
+        .await
+        .expect_err("the claim over the quota must fail");
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert_eq!(err.code, "org_quota_exceeded");
+        assert_eq!(
+            org::Entity::find().all(&state.db).await.unwrap().len(),
+            5,
+            "no org row is created past the quota"
+        );
+    }
+
     /// A brand-new slug is claimed successfully.
     #[tokio::test]
     async fn claiming_a_free_org_succeeds() {
