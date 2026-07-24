@@ -121,7 +121,10 @@ mod tests {
     fn tiny_zip() -> Vec<u8> {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         writer
-            .start_file("pkg/dist/style.css", zip::write::SimpleFileOptions::default())
+            .start_file(
+                "pkg/dist/style.css",
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer.write_all(b"body { color: orange }").unwrap();
         writer.finish().unwrap().into_inner()

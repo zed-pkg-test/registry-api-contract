@@ -23,7 +23,9 @@ pub struct SearchParams {
 /// (backslash first, so escapes are not themselves re-escaped). Used with an
 /// explicit `ESCAPE '\'` clause; the pattern stays a bind parameter.
 fn escape_like(q: &str) -> String {
-    q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    q.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 fn contains_escaped(q: &str) -> LikeExpr {
