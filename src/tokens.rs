@@ -65,6 +65,7 @@ async fn find_or_create_org(db: &sea_orm::DatabaseConnection, slug: &str) -> Res
         id: ActiveValue::Set(uuid::Uuid::new_v4()),
         slug: ActiveValue::Set(slug.to_string()),
         created_at: ActiveValue::Set(chrono::Utc::now()),
+        created_by_token: ActiveValue::Set(None),
     }
     .insert(db)
     .await?)
