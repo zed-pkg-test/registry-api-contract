@@ -25,11 +25,24 @@ pub async fn require_token(
     headers: &HeaderMap,
 ) -> ApiResult<token::Model> {
     let plaintext = bearer_token(headers).ok_or_else(ApiErr::unauthorized)?;
-    token::Entity::find()
+    let row = token::Entity::find()
         .filter(token::Column::TokenHash.eq(hash_token(&plaintext)))
         .one(db)
         .await?
-        .ok_or_else(ApiErr::unauthorized)
+        .ok_or_else(ApiErr::unauthorized)?;
+    // A revoked or expired token is indistinguishable from an unknown one to
+    // the caller (same 401), so a leaked token can be killed by setting either
+    // column. Expiry is compared in Rust against `now()` so the check is
+    // identical on Postgres and the SQLite used in tests.
+    if row.revoked_at.is_some() {
+        return Err(ApiErr::unauthorized());
+    }
+    if let Some(expires_at) = row.expires_at {
+        if expires_at <= chrono::Utc::now() {
+            return Err(ApiErr::unauthorized());
+        }
+    }
+    Ok(row)
 }
 
 #[cfg(test)]
