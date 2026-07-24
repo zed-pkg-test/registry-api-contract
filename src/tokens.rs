@@ -14,22 +14,34 @@ use crate::entities::{org, token};
 pub async fn create_token(args: &[String]) -> Result<()> {
     let mut name = None;
     let mut org_slug = None;
+    let mut role = "owner".to_string();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--name" => name = iter.next().cloned(),
             "--org" => org_slug = iter.next().cloned(),
+            "--role" => {
+                role = iter.next().cloned().context("--role needs a value")?;
+            }
             other => bail!("unknown argument `{other}`"),
         }
     }
     let name = name.context("--name is required")?;
+    if !crate::rbac::Role::is_valid(&role) {
+        bail!("--role must be one of: owner, publisher, reader (got `{role}`)");
+    }
+    if org_slug.is_none() && role != "owner" {
+        bail!(
+            "--role only applies to org-scoped tokens; pass --org, or omit --role for an admin token"
+        );
+    }
 
     let cfg = Config::from_env()?;
     let db = Database::connect(&cfg.database_url).await?;
     migration::Migrator::up(&db, None).await?;
 
-    let org_id = match org_slug {
-        Some(slug) => Some(find_or_create_org(&db, &slug).await?.id),
+    let org_id = match &org_slug {
+        Some(slug) => Some(find_or_create_org(&db, slug).await?.id),
         None => None,
     };
 
@@ -43,12 +55,17 @@ pub async fn create_token(args: &[String]) -> Result<()> {
         name: ActiveValue::Set(name.clone()),
         token_hash: ActiveValue::Set(hash_token(&plaintext)),
         org_id: ActiveValue::Set(org_id),
+        role: ActiveValue::Set(role.clone()),
         created_at: ActiveValue::Set(chrono::Utc::now()),
     }
     .insert(&db)
     .await?;
 
-    println!("token `{name}` created; save it now, it is shown exactly once:");
+    let scope = match &org_slug {
+        Some(slug) => format!("org `{slug}`, role `{role}`"),
+        None => "admin (all orgs)".to_string(),
+    };
+    println!("token `{name}` created ({scope}); save it now, it is shown exactly once:");
     println!("{plaintext}");
     Ok(())
 }

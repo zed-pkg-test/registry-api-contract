@@ -70,11 +70,11 @@ pub async fn publish(
                 "org `{org_slug}` does not exist; claim it first with `zed org claim {org_slug}`"
             ),
         })?;
-    if let Some(scope) = token.org_id {
-        if scope != org_row.id {
-            return Err(ApiErr::unauthorized());
-        }
-    }
+    crate::rbac::authorize_publish(
+        token.org_id,
+        crate::rbac::Role::parse(&token.role),
+        org_row.id,
+    )?;
 
     match state
         .verifier

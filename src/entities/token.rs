@@ -10,6 +10,11 @@ pub struct Model {
     pub token_hash: String,
     /// Scope: Some(org) limits the token to that org; None is an admin token.
     pub org_id: Option<Uuid>,
+    /// RBAC role within the org scope: `owner`, `publisher`, or `reader`
+    /// (zed-docs issue #7). Admin tokens (no org scope) are owner-equivalent
+    /// everywhere.
+    #[sea_orm(default_value = "owner")]
+    pub role: String,
     pub created_at: DateTimeUtc,
 }
 
