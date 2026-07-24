@@ -236,4 +236,38 @@ mod tests {
         assert_eq!(mime_for("mod.wasm"), "application/wasm");
         assert_eq!(mime_for("weird.bin"), "application/octet-stream");
     }
+
+    #[test]
+    fn active_content_is_neutralized_to_text_plain() {
+        // Author-controlled markup/scripts must never be served as active
+        // content from the registry origin (H2).
+        for path in ["index.html", "page.htm", "app.js", "m.mjs", "icon.svg"] {
+            assert_eq!(
+                served_mime(path),
+                "text/plain; charset=utf-8",
+                "{path} should be neutralized"
+            );
+        }
+        // Inert types keep their guessed content-type.
+        assert_eq!(served_mime("style.css"), "text/css; charset=utf-8");
+        assert_eq!(served_mime("logo.png"), "image/png");
+        assert_eq!(served_mime("mod.wasm"), "application/wasm");
+    }
+
+    #[test]
+    fn html_and_svg_are_served_sandboxed_as_text_plain() {
+        for path in ["index.html", "icon.svg"] {
+            let headers = served_file_headers(path);
+            let get = |name: &HeaderName| {
+                headers
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| v.clone())
+                    .unwrap()
+            };
+            assert_eq!(get(&header::CONTENT_TYPE), "text/plain; charset=utf-8");
+            assert_eq!(get(&header::CONTENT_SECURITY_POLICY), "sandbox");
+            assert_eq!(get(&header::CONTENT_DISPOSITION), "inline");
+        }
+    }
 }
