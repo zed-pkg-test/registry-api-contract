@@ -8,12 +8,16 @@ mod orgs;
 mod packages;
 mod publish;
 mod search;
+mod yank;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{DefaultBodyLimit, State};
+use axum::http::{HeaderValue, header};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use zed_interfaces::artifact::ArtifactFormat;
 
 use crate::entities::{org, package, version};
 use crate::error::{ApiErr, ApiResult};
@@ -21,10 +25,14 @@ use crate::state::AppState;
 
 pub const ROUTE_PACKAGE: &str = "/v1/packages/{org}/{name}";
 pub const ROUTE_VERSION: &str = "/v1/packages/{org}/{name}/versions/{version}";
+pub const ROUTE_YANK: &str = "/v1/packages/{org}/{name}/versions/{version}/yank";
 pub const ROUTE_ARTIFACT: &str = "/v1/artifacts/{sha256}";
 pub const ROUTE_SEARCH: &str = "/v1/search";
 pub const ROUTE_ORGS: &str = "/v1/orgs";
 pub const ROUTE_FILES: &str = "/v1/files/{org}/{name}/{version}/{*path}";
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_IN_FLIGHT_REQUESTS: usize = 512;
 
 pub fn router(state: Arc<AppState>, max_artifact_bytes: usize) -> Router {
     Router::new()
@@ -34,12 +42,24 @@ pub fn router(state: Arc<AppState>, max_artifact_bytes: usize) -> Router {
             ROUTE_VERSION,
             get(packages::get_version).put(publish::publish),
         )
+        .route(ROUTE_YANK, post(yank::yank))
         .route(ROUTE_ARTIFACT, get(artifacts::get_artifact))
         .route(ROUTE_SEARCH, get(search::search))
         .route(ROUTE_ORGS, post(orgs::claim_org))
         .route(ROUTE_FILES, get(artifacts::get_file))
         .layer(DefaultBodyLimit::max(max_artifact_bytes))
         .layer(tower_http::trace::TraceLayer::new_for_http())
+        // Later layers wrap earlier ones: the timeout covers time spent
+        // queued on the concurrency limit, and the header is set on every
+        // response, including timeouts.
+        .layer(tower::limit::ConcurrencyLimitLayer::new(
+            MAX_IN_FLIGHT_REQUESTS,
+        ))
+        .layer(tower_http::timeout::TimeoutLayer::new(REQUEST_TIMEOUT))
+        .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
         .with_state(state)
 }
 
