@@ -3,8 +3,13 @@
 
 use std::io::{Cursor, Read};
 
+use axum::http::header::{self, HeaderName, HeaderValue};
 use flate2::read::GzDecoder;
 use zed_interfaces::artifact::ArtifactFormat;
+
+/// Cache policy for served package files: content is sha-addressed and
+/// immutable, so it can be cached indefinitely.
+const IMMUTABLE_CACHE: &str = "public, max-age=31536000, immutable";
 
 /// Largest single file served out of an artifact. Also the allocation cap:
 /// archive headers declare sizes and are attacker-controlled, so they are
