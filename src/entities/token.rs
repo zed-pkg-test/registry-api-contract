@@ -16,6 +16,11 @@ pub struct Model {
     #[sea_orm(default_value = "owner")]
     pub role: String,
     pub created_at: DateTimeUtc,
+    /// When the token stops being accepted (NULL = never expires).
+    pub expires_at: Option<DateTimeUtc>,
+    /// When the token was revoked (NULL = live). A revoked token is rejected
+    /// regardless of expiry.
+    pub revoked_at: Option<DateTimeUtc>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
