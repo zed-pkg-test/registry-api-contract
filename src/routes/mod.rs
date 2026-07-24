@@ -98,6 +98,12 @@ pub(super) fn sort_versions_desc(versions: &mut [String]) {
     zed_interfaces::version::sort_desc(versions);
 }
 
+/// Parse the stored `format` column ("tar.gz" / "zip") back into the shared
+/// enum; unknown spellings fall back to the default (tar.gz).
+pub(super) fn artifact_format(format: &str) -> ArtifactFormat {
+    serde_json::from_value(serde_json::Value::String(format.to_string())).unwrap_or_default()
+}
+
 pub(super) fn version_metadata(
     state: &AppState,
     org: &str,
@@ -110,8 +116,7 @@ pub(super) fn version_metadata(
         version: row.version.clone(),
         sha256: row.sha256.clone(),
         size: row.size as u64,
-        format: serde_json::from_value(serde_json::Value::String(row.format.clone()))
-            .unwrap_or_default(),
+        format: artifact_format(&row.format),
         vcs_tag: row.vcs_tag.clone(),
         vcs_commit: row.vcs_commit.clone(),
         download_url: format!(
