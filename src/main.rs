@@ -67,3 +67,23 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await?;
     Ok(())
 }
+
+/// `zed-api-server healthcheck`: probe the local `/healthz` endpoint and exit
+/// non-zero if it is not healthy. Used by the container HEALTHCHECK, which has
+/// no `curl`/`wget` in the slim runtime image.
+async fn healthcheck() -> Result<()> {
+    let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+    let port = bind.rsplit(':').next().unwrap_or("8080");
+    let url = format!("http://127.0.0.1:{port}/healthz");
+    let response = reqwest::Client::new()
+        .get(&url)
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+        .context("healthcheck request failed")?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        anyhow::bail!("healthcheck returned HTTP {}", response.status());
+    }
+}
