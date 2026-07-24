@@ -53,8 +53,7 @@ fn artifact_serve_concurrency(max_artifact_bytes: usize) -> usize {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(DEFAULT_ARTIFACT_SERVE_BUDGET);
-    (budget / max_artifact_bytes.max(1))
-        .clamp(1, MAX_IN_FLIGHT_REQUESTS)
+    (budget / max_artifact_bytes.max(1)).clamp(1, MAX_IN_FLIGHT_REQUESTS)
 }
 
 pub fn router(state: Arc<AppState>, max_artifact_bytes: usize) -> Router {
@@ -73,7 +72,10 @@ pub fn router(state: Arc<AppState>, max_artifact_bytes: usize) -> Router {
     // globally would let a client stream ~100 MB at the cheap JSON endpoints,
     // so scope the large limit to publish and default the rest to 64 KiB.
     let publish_route = Router::new()
-        .route(ROUTE_VERSION, get(packages::get_version).put(publish::publish))
+        .route(
+            ROUTE_VERSION,
+            get(packages::get_version).put(publish::publish),
+        )
         .layer(DefaultBodyLimit::max(max_artifact_bytes));
 
     Router::new()

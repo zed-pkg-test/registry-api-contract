@@ -72,7 +72,9 @@ mod tests {
 
     async fn test_state() -> Arc<AppState> {
         let mut opts = ConnectOptions::new("sqlite::memory:".to_string());
-        opts.max_connections(1).min_connections(1).sqlx_logging(false);
+        opts.max_connections(1)
+            .min_connections(1)
+            .sqlx_logging(false);
         let db: DatabaseConnection = Database::connect(opts).await.unwrap();
         let backend = db.get_database_backend();
         let schema = Schema::new(backend);
@@ -201,7 +203,10 @@ mod tests {
             .await
             .expect_err("reader must be forbidden from yanking");
         assert_eq!(err.code, "insufficient_role");
-        assert!(!is_yanked(&state).await, "the version must remain un-yanked");
+        assert!(
+            !is_yanked(&state).await,
+            "the version must remain un-yanked"
+        );
     }
 
     /// Publisher and owner roles may yank and restore.
