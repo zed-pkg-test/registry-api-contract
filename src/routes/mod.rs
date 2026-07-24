@@ -64,18 +64,23 @@ pub fn router(state: Arc<AppState>, max_artifact_bytes: usize) -> Router {
             artifact_serve_concurrency(max_artifact_bytes),
         ));
 
+    // Only publish carries an artifact body; every other endpoint takes a
+    // small JSON document (or none). The 100 MB publish limit applied
+    // globally would let a client stream ~100 MB at the cheap JSON endpoints,
+    // so scope the large limit to publish and default the rest to 64 KiB.
+    let publish_route = Router::new()
+        .route(ROUTE_VERSION, get(packages::get_version).put(publish::publish))
+        .layer(DefaultBodyLimit::max(max_artifact_bytes));
+
     Router::new()
         .route("/healthz", get(healthz))
         .route(ROUTE_PACKAGE, get(packages::get_package))
-        .route(
-            ROUTE_VERSION,
-            get(packages::get_version).put(publish::publish),
-        )
         .route(ROUTE_YANK, post(yank::yank))
         .route(ROUTE_SEARCH, get(search::search))
         .route(ROUTE_ORGS, post(orgs::claim_org))
         .merge(artifact_routes)
-        .layer(DefaultBodyLimit::max(max_artifact_bytes))
+        .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
+        .merge(publish_route)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         // Later layers wrap earlier ones: the timeout covers time spent
         // queued on the concurrency limit, and the header is set on every
