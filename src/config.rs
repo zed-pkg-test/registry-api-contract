@@ -88,6 +88,11 @@ impl Config {
             db_max_connections: env_or("DB_MAX_CONNECTIONS", "10")
                 .parse()
                 .context("DB_MAX_CONNECTIONS must be a number")?,
+            fiducia: std::env::var("FIDUCIA_URL").ok().map(|url| FiduciaConfig {
+                url,
+                internal_secret: std::env::var("FIDUCIA_INTERNAL_SECRET").ok(),
+                org_id: env_or("FIDUCIA_ORG_ID", "zed-registry"),
+            }),
         })
     }
 }
