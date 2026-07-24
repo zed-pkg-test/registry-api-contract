@@ -55,7 +55,10 @@ pub fn router(state: Arc<AppState>, max_artifact_bytes: usize) -> Router {
         .layer(tower::limit::ConcurrencyLimitLayer::new(
             MAX_IN_FLIGHT_REQUESTS,
         ))
-        .layer(tower_http::timeout::TimeoutLayer::new(REQUEST_TIMEOUT))
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            REQUEST_TIMEOUT,
+        ))
         .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
             header::X_CONTENT_TYPE_OPTIONS,
             HeaderValue::from_static("nosniff"),
