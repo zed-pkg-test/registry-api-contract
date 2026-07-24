@@ -34,6 +34,9 @@ async fn main() -> Result<()> {
     if args.get(1).map(String::as_str) == Some("create-token") {
         return tokens::create_token(&args[2..]).await;
     }
+    if args.get(1).map(String::as_str) == Some("revoke-token") {
+        return tokens::revoke_token(&args[2..]).await;
+    }
     if args.get(1).map(String::as_str) == Some("healthcheck") {
         return healthcheck().await;
     }
