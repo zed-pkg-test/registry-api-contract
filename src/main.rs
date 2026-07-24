@@ -33,6 +33,9 @@ async fn main() -> Result<()> {
     if args.get(1).map(String::as_str) == Some("create-token") {
         return tokens::create_token(&args[2..]).await;
     }
+    if args.get(1).map(String::as_str) == Some("healthcheck") {
+        return healthcheck().await;
+    }
 
     let cfg = Config::from_env()?;
     let mut connect_opts = ConnectOptions::new(cfg.database_url.clone());
