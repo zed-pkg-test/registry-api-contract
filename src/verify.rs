@@ -85,6 +85,17 @@ impl TagVerifier {
     }
 }
 
+/// A GitHub owner or repo segment is safe to interpolate into an API path only
+/// if it is non-empty, made solely of `[A-Za-z0-9._-]`, and not a bare `.`/`..`
+/// (or any all-dots string) that could traverse the request path (M4).
+fn valid_repo_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && !segment.trim_matches('.').is_empty()
+}
+
 /// `https://github.com/{owner}/{repo}[.git]` -> (owner, repo)
 pub fn parse_github(repo_url: &str) -> Option<(String, String)> {
     let rest = repo_url
@@ -95,7 +106,9 @@ pub fn parse_github(repo_url: &str) -> Option<(String, String)> {
     let mut parts = rest.splitn(2, '/');
     match (parts.next(), parts.next()) {
         (Some(owner), Some(repo))
-            if !owner.is_empty() && !repo.is_empty() && !repo.contains('/') =>
+            if !repo.contains('/')
+                && valid_repo_segment(owner)
+                && valid_repo_segment(repo) =>
         {
             Some((owner.to_string(), repo.to_string()))
         }
