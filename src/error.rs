@@ -39,6 +39,14 @@ impl ApiErr {
         }
     }
 
+    pub fn forbidden(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code,
+            message: message.into(),
+        }
+    }
+
     pub fn conflict(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::CONFLICT,
