@@ -306,10 +306,9 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use chrono::Utc;
-    use migration::MigratorTrait;
     use sea_orm::{
-        ActiveModelTrait, ActiveValue, ColumnTrait, ConnectOptions, Database, DatabaseConnection,
-        EntityTrait, QueryFilter,
+        ActiveModelTrait, ActiveValue, ColumnTrait, ConnectOptions, ConnectionTrait, Database,
+        DatabaseConnection, EntityTrait, QueryFilter, Schema,
     };
     use tower::util::ServiceExt;
     use uuid::Uuid;
