@@ -87,7 +87,7 @@ mod tests {
         let query = package::Entity::find()
             .filter(package::Column::Name.like(contains_escaped("50%_off")))
             .build(DbBackend::Postgres);
-        assert!(query.sql.contains("LIKE $1 ESCAPE '\\'"), "{}", query.sql);
+        assert!(query.sql.contains(r"LIKE $1 ESCAPE E'\\'"), "{}", query.sql);
         let values = query.values.expect("bind values");
         assert_eq!(
             format!("{:?}", values.0[0]),
