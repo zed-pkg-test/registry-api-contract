@@ -155,6 +155,7 @@ mod tests {
             fill(ROUTE_VERSION),
             r::version_path("acme", "http-kit", "1.2.0")
         );
+        assert_eq!(fill(ROUTE_YANK), r::yank_path("acme", "http-kit", "1.2.0"));
         assert_eq!(fill(ROUTE_ARTIFACT), r::artifact_path("abc"));
         assert_eq!(ROUTE_SEARCH, r::search_path());
         assert_eq!(ROUTE_ORGS, r::orgs_path());
