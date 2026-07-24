@@ -1,7 +1,16 @@
 use anyhow::Result;
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use zed_interfaces::vcs::Vcs;
 
 use crate::config::TagPolicy;
+
+/// Tags go into a URL path segment: encode everything but RFC 3986
+/// unreserved characters so `/`, `?`, `#`, … cannot alter the request.
+const TAG_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
 
 #[derive(Debug, PartialEq)]
 pub enum TagCheck {
