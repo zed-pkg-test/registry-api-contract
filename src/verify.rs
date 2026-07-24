@@ -106,9 +106,7 @@ pub fn parse_github(repo_url: &str) -> Option<(String, String)> {
     let mut parts = rest.splitn(2, '/');
     match (parts.next(), parts.next()) {
         (Some(owner), Some(repo))
-            if !repo.contains('/')
-                && valid_repo_segment(owner)
-                && valid_repo_segment(repo) =>
+            if !repo.contains('/') && valid_repo_segment(owner) && valid_repo_segment(repo) =>
         {
             Some((owner.to_string(), repo.to_string()))
         }

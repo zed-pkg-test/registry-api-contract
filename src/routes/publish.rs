@@ -288,9 +288,7 @@ async fn upsert_package<C: ConnectionTrait>(
                 Err(err) if matches!(err.sql_err(), Some(SqlErr::UniqueConstraintViolation(_))) => {
                     Err(ApiErr::conflict(
                         "package_conflict",
-                        format!(
-                            "package `{name}` was just created by a concurrent publish; retry"
-                        ),
+                        format!("package `{name}` was just created by a concurrent publish; retry"),
                     ))
                 }
                 Err(err) => Err(err.into()),
@@ -331,7 +329,9 @@ mod tests {
     /// transaction) on the same in-memory database.
     async fn test_db() -> DatabaseConnection {
         let mut opts = ConnectOptions::new("sqlite::memory:".to_string());
-        opts.max_connections(1).min_connections(1).sqlx_logging(false);
+        opts.max_connections(1)
+            .min_connections(1)
+            .sqlx_logging(false);
         let db = Database::connect(opts).await.expect("sqlite connects");
         let backend = db.get_database_backend();
         let schema = Schema::new(backend);
@@ -341,7 +341,9 @@ mod tests {
             schema.create_table_from_entity(package::Entity),
             schema.create_table_from_entity(version::Entity),
         ] {
-            db.execute(backend.build(&stmt)).await.expect("create table");
+            db.execute(backend.build(&stmt))
+                .await
+                .expect("create table");
         }
         db
     }
@@ -452,17 +454,10 @@ mod tests {
         body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
         body.extend_from_slice(artifact);
         body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
-        (
-            body,
-            format!("multipart/form-data; boundary={BOUNDARY}"),
-        )
+        (body, format!("multipart/form-data; boundary={BOUNDARY}"))
     }
 
-    async fn put_version(
-        state: &Arc<AppState>,
-        version: &str,
-        description: &str,
-    ) -> StatusCode {
+    async fn put_version(state: &Arc<AppState>, version: &str, description: &str) -> StatusCode {
         let (body, content_type) = publish_body(version, description);
         let app = super::super::router(state.clone(), 8 * 1024 * 1024);
         let response = app
