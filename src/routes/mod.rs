@@ -33,6 +33,10 @@ pub const ROUTE_FILES: &str = "/v1/files/{org}/{name}/{version}/{*path}";
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_IN_FLIGHT_REQUESTS: usize = 512;
+/// Body cap for the non-publish endpoints, which only accept small JSON
+/// (`claim_org`, `yank`) or no body at all. Publish overrides this with the
+/// artifact-sized limit.
+const JSON_BODY_LIMIT: usize = 64 * 1024;
 /// Default memory budget (bytes) for concurrently buffered artifact reads.
 /// `get_file` (and the local-storage `get_artifact` path) materialize a whole
 /// archive — up to `max_artifact_bytes` — in RAM. Bounding the number of such
