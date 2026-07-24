@@ -323,16 +323,26 @@ mod tests {
     const TOKEN_PLAINTEXT: &str = "zpkg_test_secret";
     const BOUNDARY: &str = "ZEDBOUNDARY";
 
-    /// In-memory SQLite database with the full migration set applied. A single
-    /// pooled connection keeps every statement (and `db.begin()` transaction)
-    /// on the same in-memory database.
+    /// In-memory SQLite database whose schema is built from the entity
+    /// definitions. (The migration set can't be replayed on SQLite because one
+    /// migration adds a foreign key via ALTER TABLE, which SQLite rejects; the
+    /// entity-derived schema carries the same columns and constraints we need.)
+    /// A single pooled connection keeps every statement (and `db.begin()`
+    /// transaction) on the same in-memory database.
     async fn test_db() -> DatabaseConnection {
         let mut opts = ConnectOptions::new("sqlite::memory:".to_string());
         opts.max_connections(1).min_connections(1).sqlx_logging(false);
         let db = Database::connect(opts).await.expect("sqlite connects");
-        migration::Migrator::up(&db, None)
-            .await
-            .expect("migrations apply on sqlite");
+        let backend = db.get_database_backend();
+        let schema = Schema::new(backend);
+        for stmt in [
+            schema.create_table_from_entity(org::Entity),
+            schema.create_table_from_entity(token::Entity),
+            schema.create_table_from_entity(package::Entity),
+            schema.create_table_from_entity(version::Entity),
+        ] {
+            db.execute(backend.build(&stmt)).await.expect("create table");
+        }
         db
     }
 
