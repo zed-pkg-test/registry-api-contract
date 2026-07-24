@@ -74,11 +74,8 @@ pub(super) async fn find_package(
 }
 
 pub(super) fn sort_versions_desc(versions: &mut [String]) {
-    versions.sort_by(|a, b| {
-        let pa = semver::Version::parse(a).ok();
-        let pb = semver::Version::parse(b).ok();
-        pb.cmp(&pa)
-    });
+    // Tolerant of calendar/foreign version spellings (zed-docs issue #3).
+    zed_interfaces::version::sort_desc(versions);
 }
 
 pub(super) fn version_metadata(

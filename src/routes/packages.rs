@@ -32,6 +32,9 @@ pub async fn get_package(
         description: pkg.description,
         vcs: pkg.vcs.parse().unwrap_or_default(),
         repo_url: pkg.repo_url,
+        version_scheme: zed_interfaces::version::VersionScheme::from_str_lenient(
+            &pkg.version_scheme,
+        ),
         latest: versions.first().cloned(),
         versions,
     }))

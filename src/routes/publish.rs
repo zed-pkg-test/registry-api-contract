@@ -190,6 +190,7 @@ async fn upsert_package(
                 active.description = ActiveValue::Set(m.description.clone());
                 active.vcs = ActiveValue::Set(m.repository.vcs.to_string());
                 active.repo_url = ActiveValue::Set(m.repository.url.clone());
+                active.version_scheme = ActiveValue::Set(m.version_scheme.as_str().to_string());
                 active.update(&state.db).await?
             }
             None => {
@@ -200,6 +201,7 @@ async fn upsert_package(
                     description: ActiveValue::Set(m.description.clone()),
                     vcs: ActiveValue::Set(m.repository.vcs.to_string()),
                     repo_url: ActiveValue::Set(m.repository.url.clone()),
+                    version_scheme: ActiveValue::Set(m.version_scheme.as_str().to_string()),
                     created_at: ActiveValue::Set(Utc::now()),
                 }
                 .insert(&state.db)
