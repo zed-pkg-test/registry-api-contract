@@ -5,7 +5,9 @@
 
 use anyhow::{Context, Result, bail};
 use migration::MigratorTrait;
-use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, Database, EntityTrait, QueryFilter};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue, ColumnTrait, Database, EntityTrait, QueryFilter, QuerySelect,
+};
 
 use crate::auth::hash_token;
 use crate::config::Config;
