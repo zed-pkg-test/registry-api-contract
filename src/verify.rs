@@ -118,4 +118,12 @@ mod tests {
         assert_eq!(parse_github("https://gitlab.com/acme/x"), None);
         assert_eq!(parse_github("https://github.com/acme"), None);
     }
+
+    #[test]
+    fn tags_are_percent_encoded_for_urls() {
+        let enc = |tag: &str| utf8_percent_encode(tag, TAG_ENCODE_SET).to_string();
+        assert_eq!(enc("v1.2.0"), "v1.2.0");
+        assert_eq!(enc("release_1~rc"), "release_1~rc");
+        assert_eq!(enc("a/b?x=1#f"), "a%2Fb%3Fx%3D1%23f");
+    }
 }
