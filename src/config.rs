@@ -15,6 +15,18 @@ pub struct Config {
     pub db_max_connections: u32,
 }
 
+/// Optional fiducia lock service for distributed locks (see routes/orgs.rs).
+/// Enabled by FIDUCIA_URL; absent → handlers fall back to their Postgres-only
+/// serialization, which remains fully correct.
+#[derive(Debug, Clone)]
+pub struct FiduciaConfig {
+    pub url: String,
+    /// x-fiducia-internal-auth secret for direct-to-node calls; the hosted
+    /// edge uses bearer auth instead.
+    pub internal_secret: Option<String>,
+    pub org_id: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum StorageConfig {
     Local {
