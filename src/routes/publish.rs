@@ -150,6 +150,28 @@ pub async fn publish(
     }))
 }
 
+/// Best-effort removal of a blob stored for a publish whose row insert lost
+/// the race. The racing winner may have stored the identical artifact (same
+/// sha256, same key), so only delete when no version row references the key;
+/// on any doubt (count fails), keep the blob.
+async fn cleanup_unreferenced_blob(state: &AppState, key: &str) {
+    match version::Entity::find()
+        .filter(version::Column::ArtifactKey.eq(key))
+        .count(&state.db)
+        .await
+    {
+        Ok(0) => {
+            if let Err(err) = state.store.delete(key).await {
+                tracing::warn!(key, error = %err, "failed to delete orphaned artifact blob");
+            }
+        }
+        Ok(_) => {}
+        Err(err) => {
+            tracing::warn!(key, error = %err, "skipping orphaned blob cleanup; reference check failed");
+        }
+    }
+}
+
 async fn read_multipart(multipart: &mut Multipart) -> ApiResult<(PublishMeta, Bytes)> {
     let mut meta: Option<PublishMeta> = None;
     let mut artifact: Option<Bytes> = None;
