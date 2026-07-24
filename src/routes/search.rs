@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Query, State};
+use sea_orm::sea_query::LikeExpr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use serde::Deserialize;
 use zed_interfaces::registry::{PackageSummary, SearchResponse};
@@ -18,6 +19,17 @@ pub struct SearchParams {
     q: String,
 }
 
+/// Neutralize LIKE wildcards in user queries so `%`/`_` match literally
+/// (backslash first, so escapes are not themselves re-escaped). Used with an
+/// explicit `ESCAPE '\'` clause; the pattern stays a bind parameter.
+fn escape_like(q: &str) -> String {
+    q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
+fn contains_escaped(q: &str) -> LikeExpr {
+    LikeExpr::new(format!("%{}%", escape_like(q))).escape('\\')
+}
+
 pub async fn search(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SearchParams>,
@@ -25,8 +37,8 @@ pub async fn search(
     let rows = package::Entity::find()
         .filter(
             Condition::any()
-                .add(package::Column::Name.contains(&params.q))
-                .add(package::Column::Description.contains(&params.q)),
+                .add(package::Column::Name.like(contains_escaped(&params.q)))
+                .add(package::Column::Description.like(contains_escaped(&params.q))),
         )
         .find_also_related(org::Entity)
         .limit(50)
