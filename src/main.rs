@@ -10,10 +10,11 @@ mod tokens;
 mod verify;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use migration::MigratorTrait;
-use sea_orm::Database;
+use sea_orm::{ConnectOptions, Database};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
