@@ -139,6 +139,23 @@ mod tests {
     }
 
     #[test]
+    fn rejects_path_traversal_owner_and_repo() {
+        // Path-traversal segments must never reach the GitHub API request (M4).
+        assert_eq!(parse_github("https://github.com/../evil/foo"), None);
+        assert_eq!(parse_github("https://github.com/../foo"), None);
+        assert_eq!(parse_github("https://github.com/acme/.."), None);
+        assert_eq!(parse_github("https://github.com/./foo"), None);
+        // Characters outside [A-Za-z0-9._-] are rejected too.
+        assert_eq!(parse_github("https://github.com/ac me/foo"), None);
+        assert_eq!(parse_github("https://github.com/acme/foo%2e"), None);
+        // A dotted-but-not-all-dots name is still fine.
+        assert_eq!(
+            parse_github("https://github.com/acme/foo.bar"),
+            Some(("acme".into(), "foo.bar".into()))
+        );
+    }
+
+    #[test]
     fn tags_are_percent_encoded_for_urls() {
         let enc = |tag: &str| utf8_percent_encode(tag, TAG_ENCODE_SET).to_string();
         assert_eq!(enc("v1.2.0"), "v1.2.0");
