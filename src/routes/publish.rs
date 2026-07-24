@@ -382,6 +382,7 @@ mod tests {
             name: ActiveValue::Set("test".to_string()),
             token_hash: ActiveValue::Set(hash_token(TOKEN_PLAINTEXT)),
             org_id: ActiveValue::Set(Some(org_id)),
+            role: ActiveValue::Set("owner".to_string()),
             created_at: ActiveValue::Set(Utc::now()),
         }
         .insert(db)
