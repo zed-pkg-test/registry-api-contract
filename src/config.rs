@@ -11,6 +11,8 @@ pub struct Config {
     pub public_base_url: String,
     pub verify_tags: TagPolicy,
     pub max_artifact_bytes: usize,
+    pub max_orgs_per_token: u64,
+    pub db_max_connections: u32,
 }
 
 #[derive(Debug, Clone)]
