@@ -60,6 +60,7 @@ impl TagVerifier {
             );
             return Ok(TagCheck::Skipped);
         };
+        let tag = utf8_percent_encode(tag, TAG_ENCODE_SET);
         let url = format!("https://api.github.com/repos/{owner}/{repo}/git/ref/tags/{tag}");
         let mut request = self.client.get(&url);
         if let Some(token) = &self.github_token {
