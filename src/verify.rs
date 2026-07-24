@@ -60,6 +60,12 @@ impl TagVerifier {
             );
             return Ok(TagCheck::Skipped);
         };
+        // `owner`/`repo` are already restricted to [A-Za-z0-9._-] by
+        // `parse_github`; encode them with the same set as the tag anyway so a
+        // future parser change cannot smuggle path-altering characters into the
+        // GitHub API request (M4).
+        let owner = utf8_percent_encode(&owner, TAG_ENCODE_SET);
+        let repo = utf8_percent_encode(&repo, TAG_ENCODE_SET);
         let tag = utf8_percent_encode(tag, TAG_ENCODE_SET);
         let url = format!("https://api.github.com/repos/{owner}/{repo}/git/ref/tags/{tag}");
         let mut request = self.client.get(&url);
