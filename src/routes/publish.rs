@@ -9,7 +9,8 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use chrono::Utc;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, SqlErr,
+    ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait,
+    QueryFilter, SqlErr, TransactionTrait,
 };
 use uuid::Uuid;
 use zed_interfaces::registry::{
