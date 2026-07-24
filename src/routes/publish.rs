@@ -298,3 +298,224 @@ async fn upsert_package<C: ConnectionTrait>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use chrono::Utc;
+    use migration::MigratorTrait;
+    use sea_orm::{
+        ActiveModelTrait, ActiveValue, ColumnTrait, ConnectOptions, Database, DatabaseConnection,
+        EntityTrait, QueryFilter,
+    };
+    use tower::util::ServiceExt;
+    use uuid::Uuid;
+
+    use crate::auth::hash_token;
+    use crate::config::{StorageConfig, TagPolicy};
+    use crate::entities::{org, package, token, version};
+    use crate::state::AppState;
+    use crate::storage::ArtifactStore;
+    use crate::verify::TagVerifier;
+
+    const TOKEN_PLAINTEXT: &str = "zpkg_test_secret";
+    const BOUNDARY: &str = "ZEDBOUNDARY";
+
+    /// In-memory SQLite database with the full migration set applied. A single
+    /// pooled connection keeps every statement (and `db.begin()` transaction)
+    /// on the same in-memory database.
+    async fn test_db() -> DatabaseConnection {
+        let mut opts = ConnectOptions::new("sqlite::memory:".to_string());
+        opts.max_connections(1).min_connections(1).sqlx_logging(false);
+        let db = Database::connect(opts).await.expect("sqlite connects");
+        migration::Migrator::up(&db, None)
+            .await
+            .expect("migrations apply on sqlite");
+        db
+    }
+
+    async fn state_with(db: DatabaseConnection) -> Arc<AppState> {
+        let dir = std::env::temp_dir().join(format!("zed-api-pub-test-{}", Uuid::new_v4()));
+        Arc::new(AppState {
+            db,
+            store: ArtifactStore::from_config(&StorageConfig::Local {
+                dir: dir.to_string_lossy().to_string(),
+            })
+            .await
+            .unwrap(),
+            verifier: TagVerifier::new(TagPolicy::Off),
+            public_base_url: "http://localhost:8080".to_string(),
+            max_orgs_per_token: 5,
+        })
+    }
+
+    /// Seed org `acme`, a scoped token, and package `acme/http-kit@1.0.0` with a
+    /// known description so mutations are observable.
+    async fn seed(db: &DatabaseConnection, description: &str) -> (Uuid, Uuid) {
+        let org_id = Uuid::new_v4();
+        let token_id = Uuid::new_v4();
+        let pkg_id = Uuid::new_v4();
+        org::ActiveModel {
+            id: ActiveValue::Set(org_id),
+            slug: ActiveValue::Set("acme".to_string()),
+            created_at: ActiveValue::Set(Utc::now()),
+            created_by_token: ActiveValue::Set(Some(token_id)),
+        }
+        .insert(db)
+        .await
+        .unwrap();
+        token::ActiveModel {
+            id: ActiveValue::Set(token_id),
+            name: ActiveValue::Set("test".to_string()),
+            token_hash: ActiveValue::Set(hash_token(TOKEN_PLAINTEXT)),
+            org_id: ActiveValue::Set(Some(org_id)),
+            created_at: ActiveValue::Set(Utc::now()),
+        }
+        .insert(db)
+        .await
+        .unwrap();
+        package::ActiveModel {
+            id: ActiveValue::Set(pkg_id),
+            org_id: ActiveValue::Set(org_id),
+            name: ActiveValue::Set("http-kit".to_string()),
+            description: ActiveValue::Set(Some(description.to_string())),
+            vcs: ActiveValue::Set("git".to_string()),
+            repo_url: ActiveValue::Set("https://github.com/acme/http-kit".to_string()),
+            version_scheme: ActiveValue::Set("semver".to_string()),
+            created_at: ActiveValue::Set(Utc::now()),
+        }
+        .insert(db)
+        .await
+        .unwrap();
+        version::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            package_id: ActiveValue::Set(pkg_id),
+            version: ActiveValue::Set("1.0.0".to_string()),
+            sha256: ActiveValue::Set("existing".to_string()),
+            size: ActiveValue::Set(3),
+            format: ActiveValue::Set("tar.gz".to_string()),
+            vcs_tag: ActiveValue::Set("v1.0.0".to_string()),
+            vcs_commit: ActiveValue::Set(None),
+            artifact_key: ActiveValue::Set("artifacts/existing.tar.gz".to_string()),
+            yanked: ActiveValue::Set(false),
+            published_at: ActiveValue::Set(Utc::now()),
+        }
+        .insert(db)
+        .await
+        .unwrap();
+        (org_id, pkg_id)
+    }
+
+    /// Build a publish multipart body: a JSON `meta` field whose manifest sets
+    /// `description`, plus an `artifact` part whose sha256 is filled in for the
+    /// caller so the server's recompute check passes.
+    fn publish_body(version: &str, description: &str) -> (Vec<u8>, String) {
+        let artifact = b"hi!";
+        let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(artifact));
+        let meta = serde_json::json!({
+            "manifest": {
+                "package": {
+                    "org": "acme",
+                    "name": "http-kit",
+                    "version": version,
+                    "description": description,
+                    "repository": { "vcs": "git", "url": "https://github.com/acme/http-kit" }
+                }
+            },
+            "vcs_tag": format!("v{version}"),
+            "sha256": sha,
+            "size": artifact.len(),
+        })
+        .to_string();
+        let mut body = Vec::new();
+        body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+        body.extend_from_slice(b"Content-Disposition: form-data; name=\"meta\"\r\n\r\n");
+        body.extend_from_slice(meta.as_bytes());
+        body.extend_from_slice(format!("\r\n--{BOUNDARY}\r\n").as_bytes());
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"artifact\"; filename=\"a.tar.gz\"\r\n",
+        );
+        body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+        body.extend_from_slice(artifact);
+        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        (
+            body,
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+    }
+
+    async fn put_version(
+        state: &Arc<AppState>,
+        version: &str,
+        description: &str,
+    ) -> StatusCode {
+        let (body, content_type) = publish_body(version, description);
+        let app = super::super::router(state.clone(), 8 * 1024 * 1024);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/v1/packages/acme/http-kit/versions/{version}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {TOKEN_PLAINTEXT}"))
+                    .header(header::CONTENT_TYPE, content_type)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        response.status()
+    }
+
+    async fn description_of(db: &DatabaseConnection, pkg_id: Uuid) -> Option<String> {
+        package::Entity::find_by_id(pkg_id)
+            .one(db)
+            .await
+            .unwrap()
+            .unwrap()
+            .description
+    }
+
+    /// M1/M2: a duplicate-version publish is rejected with 409 and does NOT
+    /// rewrite the stored package metadata (the version-immutability check runs
+    /// before any upsert).
+    #[tokio::test]
+    async fn duplicate_version_publish_preserves_description() {
+        let db = test_db().await;
+        let (_org, pkg_id) = seed(&db, "ORIGINAL").await;
+        let state = state_with(db).await;
+
+        let status = put_version(&state, "1.0.0", "HACKED").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            description_of(&state.db, pkg_id).await.as_deref(),
+            Some("ORIGINAL"),
+            "rejected publish must not mutate package metadata"
+        );
+    }
+
+    /// A fresh version commits: the transaction inserts the version row and the
+    /// package metadata upsert (new description) is persisted together.
+    #[tokio::test]
+    async fn new_version_publish_commits_metadata_and_row() {
+        let db = test_db().await;
+        let (_org, pkg_id) = seed(&db, "ORIGINAL").await;
+        let state = state_with(db).await;
+
+        let status = put_version(&state, "1.1.0", "UPDATED").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            description_of(&state.db, pkg_id).await.as_deref(),
+            Some("UPDATED")
+        );
+        let inserted = version::Entity::find()
+            .filter(version::Column::PackageId.eq(pkg_id))
+            .filter(version::Column::Version.eq("1.1.0"))
+            .one(&state.db)
+            .await
+            .unwrap();
+        assert!(inserted.is_some(), "new version row must be committed");
+    }
+}
