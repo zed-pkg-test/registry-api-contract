@@ -64,14 +64,26 @@ pub async fn claim_org(
             });
         }
     }
-    org::ActiveModel {
+    let insert = org::ActiveModel {
         id: ActiveValue::Set(Uuid::new_v4()),
         slug: ActiveValue::Set(request.slug.clone()),
         created_at: ActiveValue::Set(Utc::now()),
         created_by_token: ActiveValue::Set(Some(token.id)),
     }
     .insert(&state.db)
-    .await?;
+    .await;
+    if let Err(err) = insert {
+        // A concurrent claim can win the unique `slug` index between the check
+        // above and this insert; that is the same conflict as an already-claimed
+        // org, not an internal error (M6).
+        if matches!(err.sql_err(), Some(SqlErr::UniqueConstraintViolation(_))) {
+            return Err(ApiErr::conflict(
+                "org_taken",
+                format!("org `{}` is already claimed", request.slug),
+            ));
+        }
+        return Err(err.into());
+    }
     Ok(Json(ClaimOrgResponse {
         slug: request.slug,
         created: true,
