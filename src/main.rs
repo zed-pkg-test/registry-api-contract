@@ -53,12 +53,20 @@ async fn main() -> Result<()> {
             .context("migrations failed")?;
     }
     let store = ArtifactStore::from_config(&cfg.storage).await?;
+    let fiducia = cfg.fiducia.as_ref().map(|f| {
+        tracing::info!("fiducia locks enabled at {}", f.url);
+        std::sync::Arc::new(match &f.internal_secret {
+            Some(secret) => fiducia_client::FiduciaClient::internal(&f.url, secret, &f.org_id),
+            None => fiducia_client::FiduciaClient::new(&f.url),
+        })
+    });
     let state = Arc::new(AppState {
         db,
         store,
         verifier: TagVerifier::new(cfg.verify_tags),
         public_base_url: cfg.public_base_url.trim_end_matches('/').to_string(),
         max_orgs_per_token: cfg.max_orgs_per_token,
+        fiducia,
     });
 
     let app = routes::router(state, cfg.max_artifact_bytes);

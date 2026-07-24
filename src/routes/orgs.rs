@@ -1,13 +1,16 @@
 //! Namespace claiming.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use chrono::Utc;
+use fiducia_client::{FiduciaClient, LockHandle, LockOptions};
 use sea_orm::{
-    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, SqlErr,
+    ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, DbBackend, EntityTrait,
+    PaginatorTrait, QueryFilter, SqlErr, Statement, TransactionTrait,
 };
 use uuid::Uuid;
 use zed_interfaces::manifest::is_slug;
@@ -17,6 +20,51 @@ use crate::auth::require_token;
 use crate::entities::org;
 use crate::error::{ApiErr, ApiResult};
 use crate::state::AppState;
+
+/// Outer distributed lock for a token's claim: cross-replica FIFO queueing on
+/// `zed-api/org-claim/{token_id}`. FAIL-OPEN by design — the advisory xact
+/// lock inside the claim transaction is the correctness guarantee; fiducia
+/// adds fair queueing across replicas and lock observability. A short TTL is
+/// the crash backstop; release is best-effort.
+async fn fiducia_org_claim_guard(
+    state: &AppState,
+    token_id: Uuid,
+) -> Option<(Arc<FiduciaClient>, LockHandle)> {
+    let client = state.fiducia.clone()?;
+    let key = format!("zed-api/org-claim/{token_id}");
+    let acquired = tokio::task::spawn_blocking(move || {
+        let opts = LockOptions {
+            ttl_ms: 15_000,
+            max_wait: Duration::from_secs(5),
+            ..LockOptions::default()
+        };
+        client
+            .acquire_lock_handle(&[key.as_str()], opts)
+            .map(|handle| (client, handle))
+    })
+    .await;
+    match acquired {
+        Ok(Ok(pair)) => Some(pair),
+        Ok(Err(err)) => {
+            tracing::warn!("fiducia org-claim lock unavailable, relying on pg advisory lock: {err}");
+            None
+        }
+        Err(join_err) => {
+            tracing::warn!("fiducia org-claim lock task failed: {join_err}");
+            None
+        }
+    }
+}
+
+fn release_fiducia_guard(guard: Option<(Arc<FiduciaClient>, LockHandle)>) {
+    if let Some((client, handle)) = guard {
+        tokio::task::spawn_blocking(move || {
+            if let Err(err) = client.release_lock(&handle) {
+                tracing::warn!("fiducia org-claim release failed (lease TTL is the backstop): {err:?}");
+            }
+        });
+    }
+}
 
 pub async fn claim_org(
     State(state): State<Arc<AppState>>,
@@ -46,12 +94,40 @@ pub async fn claim_org(
             format!("org `{}` is already claimed", request.slug),
         ));
     }
+    // The quota check has no unique-index backstop ("≤ K rows per token" is
+    // inexpressible as a constraint), so the count and the insert must be one
+    // critical section. Two layers, per docs: an OUTER fiducia lock queueing
+    // claims for this token across replicas, and INSIDE it a Postgres
+    // advisory xact lock owning correctness even if fiducia is down.
+    let fiducia_guard = fiducia_org_claim_guard(&state, token.id).await;
+    let outcome = claim_org_serialized(&state, &token, &request).await;
+    release_fiducia_guard(fiducia_guard);
+    outcome
+}
+
+async fn claim_org_serialized(
+    state: &AppState,
+    token: &crate::entities::token::Model,
+    request: &ClaimOrgRequest,
+) -> ApiResult<Json<ClaimOrgResponse>> {
+    let txn = state.db.begin().await?;
+    // Advisory lock, xact-scoped (auto-released on commit/rollback/crash),
+    // keyed per token — mirrors the zed-sync outbox pattern. Postgres only;
+    // the sqlite used in unit tests is single-connection and needs none.
+    if state.db.get_database_backend() == DbBackend::Postgres {
+        txn.execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT pg_advisory_xact_lock(hashtext($1))",
+            [format!("zed-api:org-claim:{}", token.id).into()],
+        ))
+        .await?;
+    }
     // Squatting quota: org-scoped tokens may only claim a bounded number of
     // namespaces; admin tokens (org_id = None) are exempt.
     if token.org_id.is_some() {
         let claimed = org::Entity::find()
             .filter(org::Column::CreatedByToken.eq(token.id))
-            .count(&state.db)
+            .count(&txn)
             .await?;
         if claimed >= state.max_orgs_per_token {
             return Err(ApiErr {
@@ -70,7 +146,7 @@ pub async fn claim_org(
         created_at: ActiveValue::Set(Utc::now()),
         created_by_token: ActiveValue::Set(Some(token.id)),
     }
-    .insert(&state.db)
+    .insert(&txn)
     .await;
     if let Err(err) = insert {
         // A concurrent claim can win the unique `slug` index between the check
@@ -84,8 +160,9 @@ pub async fn claim_org(
         }
         return Err(err.into());
     }
+    txn.commit().await?;
     Ok(Json(ClaimOrgResponse {
-        slug: request.slug,
+        slug: request.slug.clone(),
         created: true,
     }))
 }
@@ -127,6 +204,7 @@ mod tests {
             verifier: TagVerifier::new(TagPolicy::Off),
             public_base_url: "http://localhost:8080".to_string(),
             max_orgs_per_token: 5,
+            fiducia: None,
         })
     }
 
@@ -182,6 +260,44 @@ mod tests {
         .expect_err("claiming a taken org must fail");
         assert_eq!(err.status, StatusCode::CONFLICT);
         assert_eq!(err.code, "org_taken");
+    }
+
+    /// The squatting quota is enforced atomically inside the claim
+    /// transaction: the (K+1)th claim by one token is a clean 403.
+    #[tokio::test]
+    async fn org_quota_is_enforced() {
+        let state = test_state().await;
+        let org_id = Uuid::new_v4();
+        seed_token(&state.db, "scoped", Some(org_id)).await;
+
+        for i in 0..5 {
+            let resp = claim_org(
+                State(state.clone()),
+                bearer("scoped"),
+                Json(ClaimOrgRequest {
+                    slug: format!("org-{i}"),
+                }),
+            )
+            .await
+            .expect("claims under the quota succeed");
+            assert!(resp.0.created);
+        }
+        let err = claim_org(
+            State(state.clone()),
+            bearer("scoped"),
+            Json(ClaimOrgRequest {
+                slug: "one-too-many".to_string(),
+            }),
+        )
+        .await
+        .expect_err("the claim over the quota must fail");
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert_eq!(err.code, "org_quota_exceeded");
+        assert_eq!(
+            org::Entity::find().all(&state.db).await.unwrap().len(),
+            5,
+            "no org row is created past the quota"
+        );
     }
 
     /// A brand-new slug is claimed successfully.
