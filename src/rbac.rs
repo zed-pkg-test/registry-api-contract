@@ -55,11 +55,7 @@ impl Role {
 /// Authorize a publish of `target_org` by a token scoped to `token_org` with
 /// `role`. Admin tokens (`token_org == None`) may publish anywhere; a scoped
 /// token must target its own org and hold a publishing role.
-pub fn authorize_publish(
-    token_org: Option<Uuid>,
-    role: Role,
-    target_org: Uuid,
-) -> ApiResult<()> {
+pub fn authorize_publish(token_org: Option<Uuid>, role: Role, target_org: Uuid) -> ApiResult<()> {
     match token_org {
         None => Ok(()),
         Some(scope) if scope != target_org => Err(ApiErr::unauthorized()),

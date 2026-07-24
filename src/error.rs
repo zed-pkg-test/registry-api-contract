@@ -87,3 +87,19 @@ impl From<anyhow::Error> for ApiErr {
         }
     }
 }
+
+impl From<crate::files::ExtractError> for ApiErr {
+    fn from(err: crate::files::ExtractError) -> Self {
+        match err {
+            crate::files::ExtractError::TooLarge => Self {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                code: "file_too_large",
+                message: format!(
+                    "files larger than {} bytes are not served individually; download the artifact instead",
+                    crate::files::MAX_SERVED_FILE_BYTES
+                ),
+            },
+            crate::files::ExtractError::Archive(err) => err.into(),
+        }
+    }
+}

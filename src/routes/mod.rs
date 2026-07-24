@@ -8,12 +8,16 @@ mod orgs;
 mod packages;
 mod publish;
 mod search;
+mod yank;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{DefaultBodyLimit, State};
+use axum::http::{HeaderValue, header};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use zed_interfaces::artifact::ArtifactFormat;
 
 use crate::entities::{org, package, version};
 use crate::error::{ApiErr, ApiResult};
@@ -21,10 +25,14 @@ use crate::state::AppState;
 
 pub const ROUTE_PACKAGE: &str = "/v1/packages/{org}/{name}";
 pub const ROUTE_VERSION: &str = "/v1/packages/{org}/{name}/versions/{version}";
+pub const ROUTE_YANK: &str = "/v1/packages/{org}/{name}/versions/{version}/yank";
 pub const ROUTE_ARTIFACT: &str = "/v1/artifacts/{sha256}";
 pub const ROUTE_SEARCH: &str = "/v1/search";
 pub const ROUTE_ORGS: &str = "/v1/orgs";
 pub const ROUTE_FILES: &str = "/v1/files/{org}/{name}/{version}/{*path}";
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_IN_FLIGHT_REQUESTS: usize = 512;
 
 pub fn router(state: Arc<AppState>, max_artifact_bytes: usize) -> Router {
     Router::new()
@@ -34,12 +42,27 @@ pub fn router(state: Arc<AppState>, max_artifact_bytes: usize) -> Router {
             ROUTE_VERSION,
             get(packages::get_version).put(publish::publish),
         )
+        .route(ROUTE_YANK, post(yank::yank))
         .route(ROUTE_ARTIFACT, get(artifacts::get_artifact))
         .route(ROUTE_SEARCH, get(search::search))
         .route(ROUTE_ORGS, post(orgs::claim_org))
         .route(ROUTE_FILES, get(artifacts::get_file))
         .layer(DefaultBodyLimit::max(max_artifact_bytes))
         .layer(tower_http::trace::TraceLayer::new_for_http())
+        // Later layers wrap earlier ones: the timeout covers time spent
+        // queued on the concurrency limit, and the header is set on every
+        // response, including timeouts.
+        .layer(tower::limit::ConcurrencyLimitLayer::new(
+            MAX_IN_FLIGHT_REQUESTS,
+        ))
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            REQUEST_TIMEOUT,
+        ))
+        .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
         .with_state(state)
 }
 
@@ -78,6 +101,12 @@ pub(super) fn sort_versions_desc(versions: &mut [String]) {
     zed_interfaces::version::sort_desc(versions);
 }
 
+/// Parse the stored `format` column ("tar.gz" / "zip") back into the shared
+/// enum; unknown spellings fall back to the default (tar.gz).
+pub(super) fn artifact_format(format: &str) -> ArtifactFormat {
+    serde_json::from_value(serde_json::Value::String(format.to_string())).unwrap_or_default()
+}
+
 pub(super) fn version_metadata(
     state: &AppState,
     org: &str,
@@ -90,8 +119,7 @@ pub(super) fn version_metadata(
         version: row.version.clone(),
         sha256: row.sha256.clone(),
         size: row.size as u64,
-        format: serde_json::from_value(serde_json::Value::String(row.format.clone()))
-            .unwrap_or_default(),
+        format: artifact_format(&row.format),
         vcs_tag: row.vcs_tag.clone(),
         vcs_commit: row.vcs_commit.clone(),
         download_url: format!(
@@ -130,6 +158,7 @@ mod tests {
             fill(ROUTE_VERSION),
             r::version_path("acme", "http-kit", "1.2.0")
         );
+        assert_eq!(fill(ROUTE_YANK), r::yank_path("acme", "http-kit", "1.2.0"));
         assert_eq!(fill(ROUTE_ARTIFACT), r::artifact_path("abc"));
         assert_eq!(ROUTE_SEARCH, r::search_path());
         assert_eq!(ROUTE_ORGS, r::orgs_path());
@@ -151,6 +180,7 @@ mod tests {
             .unwrap(),
             verifier: TagVerifier::new(TagPolicy::Off),
             public_base_url: "http://localhost:8080".to_string(),
+            max_orgs_per_token: 5,
         });
         let app = router(state, 1024 * 1024);
         let response = app

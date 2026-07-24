@@ -31,7 +31,9 @@ pub async fn create_token(args: &[String]) -> Result<()> {
         bail!("--role must be one of: owner, publisher, reader (got `{role}`)");
     }
     if org_slug.is_none() && role != "owner" {
-        bail!("--role only applies to org-scoped tokens; pass --org, or omit --role for an admin token");
+        bail!(
+            "--role only applies to org-scoped tokens; pass --org, or omit --role for an admin token"
+        );
     }
 
     let cfg = Config::from_env()?;
@@ -80,6 +82,7 @@ async fn find_or_create_org(db: &sea_orm::DatabaseConnection, slug: &str) -> Res
         id: ActiveValue::Set(uuid::Uuid::new_v4()),
         slug: ActiveValue::Set(slug.to_string()),
         created_at: ActiveValue::Set(chrono::Utc::now()),
+        created_by_token: ActiveValue::Set(None),
     }
     .insert(db)
     .await?)

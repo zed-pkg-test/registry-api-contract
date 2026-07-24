@@ -13,7 +13,7 @@ use crate::files;
 use crate::state::AppState;
 use crate::storage::Download;
 
-use super::{find_org, find_package};
+use super::{artifact_format, find_org, find_package};
 
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
@@ -33,7 +33,10 @@ pub async fn get_artifact(
         Download::Bytes(bytes) => Ok((
             StatusCode::OK,
             [
-                (header::CONTENT_TYPE, "application/gzip".to_string()),
+                (
+                    header::CONTENT_TYPE,
+                    artifact_format(&row.format).content_type().to_string(),
+                ),
                 (header::CACHE_CONTROL, IMMUTABLE.to_string()),
             ],
             bytes,
@@ -55,8 +58,7 @@ pub async fn get_file(
         .await?
         .ok_or_else(|| ApiErr::not_found("version"))?;
     let archive = state.store.get_bytes(&row.artifact_key).await?;
-    let file = files::extract_file(&archive, &path)
-        .map_err(anyhow::Error::from)?
+    let file = files::extract_file(&archive, artifact_format(&row.format), &path)?
         .ok_or_else(|| ApiErr::not_found("file"))?;
     Ok((
         StatusCode::OK,
