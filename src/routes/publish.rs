@@ -8,7 +8,9 @@ use axum::body::Bytes;
 use axum::extract::{Multipart, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use chrono::Utc;
-use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, SqlErr,
+};
 use uuid::Uuid;
 use zed_interfaces::registry::{
     PUBLISH_ARTIFACT_FIELD, PUBLISH_META_FIELD, PublishMeta, PublishResponse,
