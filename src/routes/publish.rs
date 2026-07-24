@@ -232,42 +232,69 @@ async fn read_multipart(multipart: &mut Multipart) -> ApiResult<(PublishMeta, By
     Ok((meta, artifact))
 }
 
-async fn upsert_package(
+/// Read-only lookup of a package by (org, name); used before any metadata
+/// mutation so an immutability conflict can be reported without an upsert.
+async fn find_package_row(
     state: &AppState,
+    org_row: &org::Model,
+    name: &str,
+) -> ApiResult<Option<package::Model>> {
+    Ok(package::Entity::find()
+        .filter(package::Column::OrgId.eq(org_row.id))
+        .filter(package::Column::Name.eq(name))
+        .one(&state.db)
+        .await?)
+}
+
+async fn upsert_package<C: ConnectionTrait>(
+    conn: &C,
     org_row: &org::Model,
     name: &str,
     meta: &PublishMeta,
 ) -> ApiResult<package::Model> {
     let m = &meta.manifest.package;
-    Ok(
-        match package::Entity::find()
-            .filter(package::Column::OrgId.eq(org_row.id))
-            .filter(package::Column::Name.eq(name))
-            .one(&state.db)
-            .await?
-        {
-            Some(existing) => {
-                let mut active: package::ActiveModel = existing.into();
-                active.description = ActiveValue::Set(m.description.clone());
-                active.vcs = ActiveValue::Set(m.repository.vcs.to_string());
-                active.repo_url = ActiveValue::Set(m.repository.url.clone());
-                active.version_scheme = ActiveValue::Set(m.version_scheme.as_str().to_string());
-                active.update(&state.db).await?
+    match package::Entity::find()
+        .filter(package::Column::OrgId.eq(org_row.id))
+        .filter(package::Column::Name.eq(name))
+        .one(conn)
+        .await?
+    {
+        Some(existing) => {
+            let mut active: package::ActiveModel = existing.into();
+            active.description = ActiveValue::Set(m.description.clone());
+            active.vcs = ActiveValue::Set(m.repository.vcs.to_string());
+            active.repo_url = ActiveValue::Set(m.repository.url.clone());
+            active.version_scheme = ActiveValue::Set(m.version_scheme.as_str().to_string());
+            Ok(active.update(conn).await?)
+        }
+        None => {
+            let insert = package::ActiveModel {
+                id: ActiveValue::Set(Uuid::new_v4()),
+                org_id: ActiveValue::Set(org_row.id),
+                name: ActiveValue::Set(name.to_string()),
+                description: ActiveValue::Set(m.description.clone()),
+                vcs: ActiveValue::Set(m.repository.vcs.to_string()),
+                repo_url: ActiveValue::Set(m.repository.url.clone()),
+                version_scheme: ActiveValue::Set(m.version_scheme.as_str().to_string()),
+                created_at: ActiveValue::Set(Utc::now()),
             }
-            None => {
-                package::ActiveModel {
-                    id: ActiveValue::Set(Uuid::new_v4()),
-                    org_id: ActiveValue::Set(org_row.id),
-                    name: ActiveValue::Set(name.to_string()),
-                    description: ActiveValue::Set(m.description.clone()),
-                    vcs: ActiveValue::Set(m.repository.vcs.to_string()),
-                    repo_url: ActiveValue::Set(m.repository.url.clone()),
-                    version_scheme: ActiveValue::Set(m.version_scheme.as_str().to_string()),
-                    created_at: ActiveValue::Set(Utc::now()),
+            .insert(conn)
+            .await;
+            match insert {
+                Ok(pkg) => Ok(pkg),
+                // A concurrent first-publish can win the (org_id, name) unique
+                // index between the read above and this insert; surface a clean
+                // 409 rather than a 500 (M6).
+                Err(err) if matches!(err.sql_err(), Some(SqlErr::UniqueConstraintViolation(_))) => {
+                    Err(ApiErr::conflict(
+                        "package_conflict",
+                        format!(
+                            "package `{name}` was just created by a concurrent publish; retry"
+                        ),
+                    ))
                 }
-                .insert(&state.db)
-                .await?
+                Err(err) => Err(err.into()),
             }
-        },
-    )
+        }
+    }
 }
