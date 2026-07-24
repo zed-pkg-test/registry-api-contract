@@ -13,6 +13,9 @@ members = [".", "migration"]
 zed-interfaces = { path = "../zed-interfaces" }
 migration = { path = "migration" }
 anyhow = "1"
+# Distributed locks/leases (fiducia.cloud). Blocking (ureq) client — call it
+# via spawn_blocking from async handlers. See routes/orgs.rs.
+fiducia-client = { git = "https://github.com/fiducia-cloud/fiducia-clients.git" }
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1"
 axum = { version = "0.8", features = ["multipart"] }
@@ -39,3 +42,7 @@ zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# SQLite is pulled in only for tests (dev-dependencies are excluded from
+# `cargo build --release`), giving publish/claim handlers a real in-memory
+# database to exercise transaction/immutability behavior against.
+sea-orm = { version = "1", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "with-chrono", "with-uuid"] }

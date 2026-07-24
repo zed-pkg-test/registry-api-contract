@@ -3,8 +3,13 @@
 
 use std::io::{Cursor, Read};
 
+use axum::http::header::{self, HeaderName, HeaderValue};
 use flate2::read::GzDecoder;
 use zed_interfaces::artifact::ArtifactFormat;
+
+/// Cache policy for served package files: content is sha-addressed and
+/// immutable, so it can be cached indefinitely.
+const IMMUTABLE_CACHE: &str = "public, max-age=31536000, immutable";
 
 /// Largest single file served out of an artifact. Also the allocation cap:
 /// archive headers declare sizes and are attacker-controlled, so they are
@@ -78,6 +83,9 @@ fn read_capped<R: Read>(reader: R) -> Result<Vec<u8>, ExtractError> {
     Ok(buf)
 }
 
+/// Best-effort content-type guess from a file extension. This is the *raw*
+/// guess; user-published files are served through [`served_mime`], which
+/// neutralizes active-content types before they reach a browser.
 pub fn mime_for(path: &str) -> &'static str {
     match path.rsplit('.').next().unwrap_or_default() {
         "css" => "text/css; charset=utf-8",
@@ -94,6 +102,54 @@ pub fn mime_for(path: &str) -> &'static str {
         "woff2" => "font/woff2",
         _ => "application/octet-stream",
     }
+}
+
+/// Content types a browser executes in the page's origin. Package contents are
+/// author-controlled, so serving any of these as-is from the trusted registry
+/// origin is a stored-XSS vector (H2).
+fn is_active_content(mime: &str) -> bool {
+    let base = mime.split(';').next().unwrap_or(mime).trim();
+    matches!(
+        base,
+        "text/html" | "image/svg+xml" | "application/xhtml+xml"
+    ) || base.contains("javascript")
+}
+
+/// The content-type a single package file is *served* with. HTML/SVG/XHTML/JS
+/// are downgraded to `text/plain` so author-published markup or scripts cannot
+/// execute from the registry origin (H2); everything else keeps its guess.
+pub fn served_mime(path: &str) -> &'static str {
+    let guessed = mime_for(path);
+    if is_active_content(guessed) {
+        "text/plain; charset=utf-8"
+    } else {
+        guessed
+    }
+}
+
+/// Response headers for every `/v1/files` (unpkg-style) response. Beyond the
+/// neutralized content-type, user content is served `inline` under a `sandbox`
+/// CSP so it is inert as active content even if a browser guesses otherwise
+/// (H2). `X-Content-Type-Options: nosniff` is applied globally by the router.
+pub fn served_file_headers(path: &str) -> [(HeaderName, HeaderValue); 4] {
+    [
+        (
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(served_mime(path)),
+        ),
+        (
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(IMMUTABLE_CACHE),
+        ),
+        (
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("inline"),
+        ),
+        (
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("sandbox"),
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -179,5 +235,39 @@ mod tests {
         assert_eq!(mime_for("dist/style.css"), "text/css; charset=utf-8");
         assert_eq!(mime_for("mod.wasm"), "application/wasm");
         assert_eq!(mime_for("weird.bin"), "application/octet-stream");
+    }
+
+    #[test]
+    fn active_content_is_neutralized_to_text_plain() {
+        // Author-controlled markup/scripts must never be served as active
+        // content from the registry origin (H2).
+        for path in ["index.html", "page.htm", "app.js", "m.mjs", "icon.svg"] {
+            assert_eq!(
+                served_mime(path),
+                "text/plain; charset=utf-8",
+                "{path} should be neutralized"
+            );
+        }
+        // Inert types keep their guessed content-type.
+        assert_eq!(served_mime("style.css"), "text/css; charset=utf-8");
+        assert_eq!(served_mime("logo.png"), "image/png");
+        assert_eq!(served_mime("mod.wasm"), "application/wasm");
+    }
+
+    #[test]
+    fn html_and_svg_are_served_sandboxed_as_text_plain() {
+        for path in ["index.html", "icon.svg"] {
+            let headers = served_file_headers(path);
+            let get = |name: &HeaderName| {
+                headers
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| v.clone())
+                    .unwrap()
+            };
+            assert_eq!(get(&header::CONTENT_TYPE), "text/plain; charset=utf-8");
+            assert_eq!(get(&header::CONTENT_SECURITY_POLICY), "sandbox");
+            assert_eq!(get(&header::CONTENT_DISPOSITION), "inline");
+        }
     }
 }

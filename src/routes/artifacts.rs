@@ -60,13 +60,7 @@ pub async fn get_file(
     let archive = state.store.get_bytes(&row.artifact_key).await?;
     let file = files::extract_file(&archive, artifact_format(&row.format), &path)?
         .ok_or_else(|| ApiErr::not_found("file"))?;
-    Ok((
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, files::mime_for(&path).to_string()),
-            (header::CACHE_CONTROL, IMMUTABLE.to_string()),
-        ],
-        file,
-    )
-        .into_response())
+    // Active-content types are neutralized and the response is sandboxed so
+    // author-published files cannot run as active content from this origin (H2).
+    Ok((StatusCode::OK, files::served_file_headers(&path), file).into_response())
 }

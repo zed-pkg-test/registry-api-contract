@@ -13,6 +13,19 @@ pub struct Config {
     pub max_artifact_bytes: usize,
     pub max_orgs_per_token: u64,
     pub db_max_connections: u32,
+    pub fiducia: Option<FiduciaConfig>,
+}
+
+/// Optional fiducia lock service for distributed locks (see routes/orgs.rs).
+/// Enabled by FIDUCIA_URL; absent → handlers fall back to their Postgres-only
+/// serialization, which remains fully correct.
+#[derive(Debug, Clone)]
+pub struct FiduciaConfig {
+    pub url: String,
+    /// x-fiducia-internal-auth secret for direct-to-node calls; the hosted
+    /// edge uses bearer auth instead.
+    pub internal_secret: Option<String>,
+    pub org_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +88,11 @@ impl Config {
             db_max_connections: env_or("DB_MAX_CONNECTIONS", "10")
                 .parse()
                 .context("DB_MAX_CONNECTIONS must be a number")?,
+            fiducia: std::env::var("FIDUCIA_URL").ok().map(|url| FiduciaConfig {
+                url,
+                internal_secret: std::env::var("FIDUCIA_INTERNAL_SECRET").ok(),
+                org_id: env_or("FIDUCIA_ORG_ID", "zed-registry"),
+            }),
         })
     }
 }
