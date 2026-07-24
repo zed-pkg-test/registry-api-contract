@@ -83,6 +83,9 @@ fn read_capped<R: Read>(reader: R) -> Result<Vec<u8>, ExtractError> {
     Ok(buf)
 }
 
+/// Best-effort content-type guess from a file extension. This is the *raw*
+/// guess; user-published files are served through [`served_mime`], which
+/// neutralizes active-content types before they reach a browser.
 pub fn mime_for(path: &str) -> &'static str {
     match path.rsplit('.').next().unwrap_or_default() {
         "css" => "text/css; charset=utf-8",
@@ -99,6 +102,54 @@ pub fn mime_for(path: &str) -> &'static str {
         "woff2" => "font/woff2",
         _ => "application/octet-stream",
     }
+}
+
+/// Content types a browser executes in the page's origin. Package contents are
+/// author-controlled, so serving any of these as-is from the trusted registry
+/// origin is a stored-XSS vector (H2).
+fn is_active_content(mime: &str) -> bool {
+    let base = mime.split(';').next().unwrap_or(mime).trim();
+    matches!(
+        base,
+        "text/html" | "image/svg+xml" | "application/xhtml+xml"
+    ) || base.contains("javascript")
+}
+
+/// The content-type a single package file is *served* with. HTML/SVG/XHTML/JS
+/// are downgraded to `text/plain` so author-published markup or scripts cannot
+/// execute from the registry origin (H2); everything else keeps its guess.
+pub fn served_mime(path: &str) -> &'static str {
+    let guessed = mime_for(path);
+    if is_active_content(guessed) {
+        "text/plain; charset=utf-8"
+    } else {
+        guessed
+    }
+}
+
+/// Response headers for every `/v1/files` (unpkg-style) response. Beyond the
+/// neutralized content-type, user content is served `inline` under a `sandbox`
+/// CSP so it is inert as active content even if a browser guesses otherwise
+/// (H2). `X-Content-Type-Options: nosniff` is applied globally by the router.
+pub fn served_file_headers(path: &str) -> [(HeaderName, HeaderValue); 4] {
+    [
+        (
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(served_mime(path)),
+        ),
+        (
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(IMMUTABLE_CACHE),
+        ),
+        (
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("inline"),
+        ),
+        (
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("sandbox"),
+        ),
+    ]
 }
 
 #[cfg(test)]
