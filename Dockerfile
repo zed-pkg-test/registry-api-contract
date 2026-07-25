@@ -4,8 +4,17 @@
 #   docker build -f zed-api-server.rs/Dockerfile -t ghcr.io/zed-pkg/zed-api-server:dev .
 #
 # Base images are pinned to explicit minor tags (not floating rust:1-slim /
-# debian:stable-slim) so rebuilds are reproducible.
-FROM rust:1.83-slim AS build
+# debian:stable-slim) so rebuilds are reproducible. The toolchain must be
+# The toolchain must satisfy the crate's `edition = "2024"` (>= 1.85) AND the
+# aws-sdk-* crates' MSRV (>= 1.94.1), so the base is pinned to 1.97.1.
+# RUSTUP_TOOLCHAIN (set to the base image's exact version) overrides the repo's
+# rust-toolchain.toml (channel = "stable"), so a Docker build uses the installed
+# toolchain and never downloads a floating one — reproducible, no build-time CDN.
+# -bookworm (not the default trixie) so the build glibc matches the
+# debian:12-slim (bookworm) runtime stage below — a trixie build links against
+# GLIBC_2.39 that bookworm's 2.36 does not provide.
+FROM rust:1.97-slim-bookworm AS build
+ENV RUSTUP_TOOLCHAIN=1.97.1
 WORKDIR /work
 COPY zed-interfaces ./zed-interfaces
 COPY zed-api-server.rs ./zed-api-server.rs
