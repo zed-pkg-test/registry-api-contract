@@ -184,8 +184,8 @@ mod tests {
         )
     }
 
-    fn is_yanked(state: &AppState) -> impl std::future::Future<Output = bool> + '_ {
-        async move {
+    async fn is_yanked(state: &AppState) -> bool {
+        {
             version::Entity::find()
                 .one(&state.db)
                 .await
