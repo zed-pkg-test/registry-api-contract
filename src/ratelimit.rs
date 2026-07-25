@@ -115,6 +115,49 @@ impl RateLimiter {
     }
 }
 
+/// Axum middleware charging one unit per request against the caller's bearer
+/// token. Requests without a token pass through untouched — they cannot
+/// mutate anything (every write path calls `require_token`), and the ingress
+/// owns per-IP limiting for reads.
+pub async fn layer(
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<crate::state::AppState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let Some(limiter) = state.rate_limiter.as_ref() else {
+        return next.run(request).await;
+    };
+    let Some(token) = crate::auth::bearer_token(request.headers()) else {
+        return next.run(request).await;
+    };
+    // Key on the token's hash, never the plaintext: the key lives in a map,
+    // in log lines, and in error paths, and none of those should hold a
+    // usable credential.
+    let key = crate::auth::hash_token(&token);
+    match limiter.check(&key) {
+        Decision::Allow => next.run(request).await,
+        Decision::Deny { retry_after_secs } => {
+            tracing::warn!(retry_after_secs, "rate limit exceeded for a token");
+            (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                [(
+                    axum::http::header::RETRY_AFTER,
+                    retry_after_secs.to_string(),
+                )],
+                axum::Json(serde_json::json!({
+                    "error": "rate_limited",
+                    "message": format!(
+                        "too many requests for this token; retry in {retry_after_secs}s"
+                    ),
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// Spawn the periodic sweep that keeps the bucket map bounded.
 pub fn spawn_sweeper(limiter: std::sync::Arc<RateLimiter>) {
     tokio::spawn(async move {
