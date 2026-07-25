@@ -45,7 +45,9 @@ pub enum Decision {
     Allow,
     /// Rejected; retry after roughly this many seconds (never 0, so a client
     /// honoring `Retry-After` always backs off).
-    Deny { retry_after_secs: u64 },
+    Deny {
+        retry_after_secs: u64,
+    },
 }
 
 impl RateLimiter {
@@ -82,7 +84,9 @@ impl RateLimiter {
             last_seen: now,
         });
         // Continuous refill since the last charge, capped at the burst size.
-        let elapsed = now.saturating_duration_since(bucket.last_seen).as_secs_f64();
+        let elapsed = now
+            .saturating_duration_since(bucket.last_seen)
+            .as_secs_f64();
         bucket.tokens = (bucket.tokens + elapsed * self.per_second).min(self.burst);
         bucket.last_seen = now;
 

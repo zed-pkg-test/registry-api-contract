@@ -243,9 +243,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    async fn rate_limited_state(
-        limiter: crate::ratelimit::RateLimiter,
-    ) -> Arc<AppState> {
+    async fn rate_limited_state(limiter: crate::ratelimit::RateLimiter) -> Arc<AppState> {
         let dir = std::env::temp_dir().join("zed-api-rl-test-store");
         Arc::new(AppState {
             db: sea_orm::DatabaseConnection::Disconnected,

@@ -158,8 +158,7 @@ fn map_tar_err(err: std::io::Error) -> ExtractError {
 /// front, stop at the cap + 1, and reject if the actual bytes exceed the cap.
 fn read_capped<R: Read>(reader: R) -> Result<Vec<u8>, ExtractError> {
     let mut buf = Vec::new();
-    std::io::copy(&mut reader.take(MAX_SERVED_FILE_BYTES + 1), &mut buf)
-        .map_err(map_tar_err)?;
+    std::io::copy(&mut reader.take(MAX_SERVED_FILE_BYTES + 1), &mut buf).map_err(map_tar_err)?;
     if buf.len() as u64 > MAX_SERVED_FILE_BYTES {
         return Err(ExtractError::TooLarge);
     }
