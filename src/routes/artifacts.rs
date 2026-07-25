@@ -58,7 +58,16 @@ pub async fn get_file(
         .await?
         .ok_or_else(|| ApiErr::not_found("version"))?;
     let archive = state.store.get_bytes(&row.artifact_key).await?;
-    let file = files::extract_file(&archive, artifact_format(&row.format), &path)?
+    // Decompression is CPU-bound and can run long on a large artifact. Left
+    // inline it blocks a tokio worker, and a future that never yields cannot be
+    // interrupted by the router's TimeoutLayer — so the request keeps burning
+    // CPU past the timeout. Hand it to the blocking pool.
+    let format = artifact_format(&row.format);
+    let want = path.clone();
+    let file = tokio::task::spawn_blocking(move || files::extract_file(&archive, format, &want))
+        .await
+        .map_err(|err| ApiErr::internal(anyhow::anyhow!("extract task failed: {err}")))?
+        .map_err(ApiErr::from)?
         .ok_or_else(|| ApiErr::not_found("file"))?;
     // Active-content types are neutralized and the response is sandboxed so
     // author-published files cannot run as active content from this origin (H2).
