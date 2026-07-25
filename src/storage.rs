@@ -142,10 +142,18 @@ impl ArtifactStore {
         }
     }
 
-    /// Full artifact bytes regardless of backend (for /v1/files extraction).
+    /// Full artifact bytes regardless of backend (for /v1/files extraction,
+    /// which must seek within the archive). Refuses anything larger than
+    /// [`MAX_BUFFERED_ARTIFACT_BYTES`] *before* allocating, so a huge object
+    /// fails fast instead of ballooning the process.
     pub async fn get_bytes(&self, key: &str) -> Result<Vec<u8>> {
         match self {
-            Self::Local { dir } => Ok(tokio::fs::read(Self::local_path(dir, key)).await?),
+            Self::Local { dir } => {
+                let path = Self::local_path(dir, key);
+                let len = tokio::fs::metadata(&path).await?.len();
+                Self::guard_buffered(key, len)?;
+                Ok(tokio::fs::read(&path).await?)
+            }
             Self::S3 { client, bucket } => {
                 let object = client
                     .get_object()
@@ -154,9 +162,26 @@ impl ArtifactStore {
                     .send()
                     .await
                     .context("s3 get_object failed")?;
-                Ok(object.body.collect().await?.into_bytes().to_vec())
+                // Trust the object's declared length only to reject early; the
+                // collected body is re-checked below in case it lied.
+                if let Some(len) = object.content_length() {
+                    Self::guard_buffered(key, len.max(0) as u64)?;
+                }
+                let bytes = object.body.collect().await?.into_bytes().to_vec();
+                Self::guard_buffered(key, bytes.len() as u64)?;
+                Ok(bytes)
             }
         }
+    }
+
+    fn guard_buffered(key: &str, len: u64) -> Result<()> {
+        if len > MAX_BUFFERED_ARTIFACT_BYTES {
+            anyhow::bail!(
+                "artifact {key} is {len} bytes, over the {MAX_BUFFERED_ARTIFACT_BYTES}-byte \
+                 in-memory ceiling; refusing to buffer it"
+            );
+        }
+        Ok(())
     }
 }
 
