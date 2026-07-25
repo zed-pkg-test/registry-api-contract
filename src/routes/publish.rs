@@ -145,7 +145,7 @@ pub async fn publish(
         package_id: ActiveValue::Set(pkg.id),
         version: ActiveValue::Set(ver.clone()),
         sha256: ActiveValue::Set(actual_sha.clone()),
-        size: ActiveValue::Set(artifact.len() as i64),
+        size: ActiveValue::Set(artifact_len),
         format: ActiveValue::Set(meta.format.extension().to_string()),
         vcs_tag: ActiveValue::Set(meta.vcs_tag.clone()),
         vcs_commit: ActiveValue::Set(meta.vcs_commit.clone()),
