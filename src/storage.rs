@@ -68,7 +68,7 @@ impl ArtifactStore {
         }
     }
 
-    fn local_path(dir: &PathBuf, key: &str) -> PathBuf {
+    fn local_path(dir: &std::path::Path, key: &str) -> PathBuf {
         // Keys are server-generated (`artifacts/<sha>.<ext>`), never user input.
         dir.join(key)
     }
