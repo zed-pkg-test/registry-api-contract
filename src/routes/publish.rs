@@ -286,7 +286,8 @@ async fn upsert_package<C: ConnectionTrait>(
     // never violates the constraint, so it does not abort the transaction; we
     // then read the row back within the same txn.
     .exec(conn)
-    .await?;
+    .await
+    .map_err(|e| { eprintln!("UPSERT EXEC ERR: {e:?}"); e })?;
     package::Entity::find()
         .filter(package::Column::OrgId.eq(org_row.id))
         .filter(package::Column::Name.eq(name))
