@@ -30,7 +30,9 @@ pub async fn get_artifact(
         Download::Redirect(url) => {
             Ok((StatusCode::FOUND, [(header::LOCATION, url)]).into_response())
         }
-        Download::Bytes(bytes) => Ok((
+        // Streamed, never buffered: serving a 100 MB artifact costs a read
+        // buffer, not 100 MB of resident memory per concurrent request.
+        Download::File { file, len } => Ok((
             StatusCode::OK,
             [
                 (
@@ -38,8 +40,9 @@ pub async fn get_artifact(
                     artifact_format(&row.format).content_type().to_string(),
                 ),
                 (header::CACHE_CONTROL, IMMUTABLE.to_string()),
+                (header::CONTENT_LENGTH, len.to_string()),
             ],
-            bytes,
+            Body::from_stream(ReaderStream::new(file)),
         )
             .into_response()),
     }
