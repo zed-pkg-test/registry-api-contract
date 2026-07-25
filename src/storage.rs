@@ -62,7 +62,11 @@ impl ArtifactStore {
         dir.join(key)
     }
 
-    pub async fn put(&self, key: &str, bytes: Vec<u8>, content_type: &str) -> Result<()> {
+    /// Takes `Bytes` rather than `Vec<u8>`: the artifact arrives from the
+    /// multipart reader as `Bytes`, and a `Vec` signature forced a second full
+    /// copy of every upload (peak ~2x the artifact size per in-flight publish).
+    /// Both backends consume `Bytes` without copying.
+    pub async fn put(&self, key: &str, bytes: Bytes, content_type: &str) -> Result<()> {
         match self {
             Self::Local { dir } => {
                 let path = Self::local_path(dir, key);
