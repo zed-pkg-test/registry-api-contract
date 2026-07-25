@@ -66,7 +66,7 @@ pub async fn get_file(
     let want = path.clone();
     let file = tokio::task::spawn_blocking(move || files::extract_file(&archive, format, &want))
         .await
-        .map_err(|err| ApiErr::internal(anyhow::anyhow!("extract task failed: {err}")))?
+        .map_err(|err| ApiErr::from(anyhow::anyhow!("extract task failed: {err}")))?
         .map_err(ApiErr::from)?
         .ok_or_else(|| ApiErr::not_found("file"))?;
     // Active-content types are neutralized and the response is sandboxed so
