@@ -261,7 +261,7 @@ async fn upsert_package<C: ConnectionTrait>(
     // constraint violation that aborts the surrounding transaction and drops its
     // otherwise-valid, distinct version. `created_at` is intentionally NOT in the
     // update set, so a re-publish preserves the original creation time.
-    let pkg = package::Entity::insert(package::ActiveModel {
+    package::Entity::insert(package::ActiveModel {
         id: ActiveValue::Set(Uuid::new_v4()),
         org_id: ActiveValue::Set(org_row.id),
         name: ActiveValue::Set(name.to_string()),
@@ -281,9 +281,22 @@ async fn upsert_package<C: ConnectionTrait>(
             ])
             .to_owned(),
     )
-    .exec_with_returning(conn)
+    // .exec (not exec_with_returning): RETURNING on an upsert isn't emitted
+    // portably across Postgres + the SQLite used in tests. The upsert itself
+    // never violates the constraint, so it does not abort the transaction; we
+    // then read the row back within the same txn.
+    .exec(conn)
     .await?;
-    Ok(pkg)
+    package::Entity::find()
+        .filter(package::Column::OrgId.eq(org_row.id))
+        .filter(package::Column::Name.eq(name))
+        .one(conn)
+        .await?
+        .ok_or_else(|| ApiErr {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "package_upsert_missing",
+            message: "package row missing immediately after upsert".to_string(),
+        })
 }
 
 #[cfg(test)]
