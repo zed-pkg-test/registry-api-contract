@@ -19,12 +19,22 @@ pub enum ArtifactStore {
     },
 }
 
+/// Hard ceiling on any artifact we are willing to hold in memory at once.
+/// Only the archive-extraction path ([`ArtifactStore::get_bytes`]) buffers;
+/// downloads stream. This is a safety net independent of `MAX_ARTIFACT_BYTES`
+/// (which bounds *uploads*): an object that predates a lowered config value,
+/// or one written out of band into the bucket, must still not be able to pull
+/// an unbounded allocation into the server.
+pub const MAX_BUFFERED_ARTIFACT_BYTES: u64 = 100 * 1024 * 1024;
+
 /// How a download should be served to the client.
 pub enum Download {
     /// 302 to a presigned URL (S3/R2).
     Redirect(String),
-    /// Stream the bytes directly (local backend).
-    Bytes(Vec<u8>),
+    /// An open file to stream from disk (local backend). Never buffered: the
+    /// route wraps this in a streaming body, so serving a 100 MB artifact
+    /// costs a read buffer rather than 100 MB of resident memory.
+    File { file: tokio::fs::File, len: u64 },
 }
 
 impl ArtifactStore {
