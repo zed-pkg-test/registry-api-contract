@@ -33,7 +33,7 @@ spec:
       # Talks to Postgres over egress; never calls the k8s API.
       automountServiceAccountToken: false
       imagePullSecrets:
-        - name: benefactor-ghcr
+        - name: zed-ghcr
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
