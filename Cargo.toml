@@ -19,6 +19,8 @@ fiducia-client = { git = "https://github.com/fiducia-cloud/fiducia-clients.git" 
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1"
 axum = { version = "0.8", features = ["multipart"] }
+# Bytes flows from the multipart reader into storage without a re-copy.
+bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
 flate2 = "1"
