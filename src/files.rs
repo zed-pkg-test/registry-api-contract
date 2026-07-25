@@ -16,12 +16,72 @@ const IMMUTABLE_CACHE: &str = "public, max-age=31536000, immutable";
 /// never trusted for buffer sizing.
 pub const MAX_SERVED_FILE_BYTES: u64 = 25 * 1024 * 1024;
 
+/// Aggregate cap on bytes inflated out of one artifact while locating a single
+/// entry.
+///
+/// [`MAX_SERVED_FILE_BYTES`] only bounds the *matched* entry, which is not
+/// enough for tar.gz: `GzDecoder` is not `Seek`, so `tar`'s skip path
+/// read-and-discards, meaning every non-matching entry is fully decompressed on
+/// the way past. Without an aggregate budget, a highly compressible artifact
+/// (gzip tops out near 1030:1) turns one unauthenticated request for a
+/// nonexistent path into hundreds of gigabytes of inflation.
+///
+/// The budget has to exceed the largest legitimate *uncompressed* package,
+/// since finding a file may require scanning the whole archive — hence a cap
+/// far above `MAX_ARTIFACT_BYTES` rather than a tight one.
+/// Override with `ZED_MAX_INFLATED_BYTES`.
+const DEFAULT_MAX_INFLATED_BYTES: u64 = 512 * 1024 * 1024;
+
+pub fn max_inflated_bytes() -> u64 {
+    std::env::var("ZED_MAX_INFLATED_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_MAX_INFLATED_BYTES)
+}
+
 #[derive(Debug)]
 pub enum ExtractError {
     /// The entry is larger than [`MAX_SERVED_FILE_BYTES`] (declared or actual).
     TooLarge,
+    /// The archive inflates past [`max_inflated_bytes`] — a decompression bomb,
+    /// or simply a package too large to serve single files out of.
+    InflationBudgetExceeded,
     /// The archive could not be read.
     Archive(anyhow::Error),
+}
+
+/// Reader that enforces a total-bytes budget across the whole archive scan.
+struct BudgetReader<R> {
+    inner: R,
+    remaining: u64,
+}
+
+impl<R: Read> Read for BudgetReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                INFLATION_BUDGET_MSG,
+            ));
+        }
+        let want = buf.len().min(self.remaining as usize);
+        let n = self.inner.read(&mut buf[..want])?;
+        self.remaining -= n as u64;
+        Ok(n)
+    }
+}
+
+/// Sentinel carried on the io::Error so the budget stop can be told apart from
+/// a genuinely corrupt archive after `tar` has wrapped it.
+const INFLATION_BUDGET_MSG: &str = "zed: archive exceeded the decompression budget";
+
+fn is_budget_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.to_string().contains(INFLATION_BUDGET_MSG))
+    }) || err.to_string().contains(INFLATION_BUDGET_MSG)
 }
 
 impl From<std::io::Error> for ExtractError {
