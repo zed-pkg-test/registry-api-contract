@@ -87,6 +87,13 @@ pub fn router(state: Arc<AppState>, max_artifact_bytes: usize) -> Router {
         .merge(artifact_routes)
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
         .merge(publish_route)
+        // Charge authenticated requests against their token's bucket before
+        // any handler work. Sits inside the timeout/concurrency layers so a
+        // rejected request never occupies an in-flight slot.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::ratelimit::layer,
+        ))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         // Later layers wrap earlier ones: the timeout covers time spent
         // queued on the concurrency limit, and the header is set on every
