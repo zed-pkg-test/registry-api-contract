@@ -105,10 +105,19 @@ pub fn extract_file(
     let want = format!("{}/{rel_path}", zed_interfaces::paths::ARCHIVE_ROOT);
     match format {
         ArtifactFormat::TarGz => {
-            let mut tar = tar::Archive::new(GzDecoder::new(archive));
-            for entry in tar.entries()? {
-                let entry = entry?;
-                if entry.path()?.to_string_lossy() == want {
+            // Budget the *inflated* stream, not the compressed input: skipping
+            // past unmatched entries decompresses them in full (see
+            // [`max_inflated_bytes`]).
+            let budgeted = BudgetReader {
+                inner: GzDecoder::new(archive),
+                // +1 so an archive of exactly the budget still scans cleanly.
+                remaining: max_inflated_bytes().saturating_add(1),
+            };
+            let mut tar = tar::Archive::new(budgeted);
+            let entries = tar.entries().map_err(map_tar_err)?;
+            for entry in entries {
+                let entry = entry.map_err(map_tar_err)?;
+                if entry.path().map_err(map_tar_err)?.to_string_lossy() == want {
                     if entry.size() > MAX_SERVED_FILE_BYTES {
                         return Err(ExtractError::TooLarge);
                     }
