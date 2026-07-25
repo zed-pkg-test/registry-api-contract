@@ -118,11 +118,14 @@ pub async fn publish(
         }
     }
 
-    // Store the blob before recording the row that references it.
+    // Store the blob before recording the row that references it. `Bytes` is
+    // moved (not re-copied) into the store; the length is captured first since
+    // the version row records it after the put.
     let key = artifact_key(&actual_sha, meta.format.extension());
+    let artifact_len = artifact.len() as i64;
     state
         .store
-        .put(&key, artifact.to_vec(), meta.format.content_type())
+        .put(&key, artifact, meta.format.content_type())
         .await?;
 
     // Upsert the package metadata and insert the version atomically: a failed

@@ -4865,6 +4865,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "axum",
+ "bytes",
  "chrono",
  "dotenvy",
  "fiducia-client",
