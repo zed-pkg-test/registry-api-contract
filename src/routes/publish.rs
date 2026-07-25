@@ -33,6 +33,29 @@ pub async fn publish(
 ) -> ApiResult<Json<PublishResponse>> {
     let token = require_token(&state.db, &headers).await?;
 
+    // Authorize BEFORE buffering the body. The org comes from the URL, so the
+    // role check needs nothing from the multipart payload — and reading first
+    // meant a token without publish rights could still make the server buffer a
+    // full artifact (peak memory spent before authorization was even decided).
+    // The manifest is still checked against the URL below, so authorizing on the
+    // URL's org is equivalent.
+    let org_row = org::Entity::find()
+        .filter(org::Column::Slug.eq(&org_slug))
+        .one(&state.db)
+        .await?
+        .ok_or_else(|| ApiErr {
+            status: StatusCode::NOT_FOUND,
+            code: "org_not_found",
+            message: format!(
+                "org `{org_slug}` does not exist; claim it first with `zed org claim {org_slug}`"
+            ),
+        })?;
+    crate::rbac::authorize_publish(
+        token.org_id,
+        crate::rbac::Role::parse(&token.role),
+        org_row.id,
+    )?;
+
     let (meta, artifact) = read_multipart(&mut multipart).await?;
 
     meta.manifest
