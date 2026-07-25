@@ -42,15 +42,7 @@ async fn main() -> Result<()> {
     }
 
     let cfg = Config::from_env()?;
-    let mut connect_opts = ConnectOptions::new(cfg.database_url.clone());
-    connect_opts
-        .max_connections(cfg.db_max_connections)
-        .connect_timeout(Duration::from_secs(5))
-        .acquire_timeout(Duration::from_secs(8))
-        .sqlx_logging(false);
-    let db = Database::connect(connect_opts)
-        .await
-        .context("failed to connect to DATABASE_URL")?;
+    let db = connect_with_retry(&cfg).await?;
     if cfg.auto_migrate {
         migration::Migrator::up(&db, None)
             .await
