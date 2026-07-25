@@ -347,6 +347,15 @@ mod tests {
                 .await
                 .expect("create table");
         }
+        // create_table_from_entity omits the migration's composite unique index
+        // (idx_package_org_name); recreate it so the publish upsert's
+        // ON CONFLICT (org_id, name) matches a real constraint, exactly as in
+        // production (migration m20260723_000001_init).
+        db.execute_unprepared(
+            "CREATE UNIQUE INDEX idx_package_org_name ON package (org_id, name)",
+        )
+        .await
+        .expect("create unique index");
         db
     }
 
