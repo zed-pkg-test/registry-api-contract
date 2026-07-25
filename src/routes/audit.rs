@@ -113,6 +113,8 @@ mod tests {
             public_base_url: "http://localhost:8080".to_string(),
             max_orgs_per_token: 5,
             fiducia: None,
+            // Unit tests call handlers directly and must not be throttled.
+            rate_limiter: None,
         })
     }
 
