@@ -12,6 +12,7 @@ use sea_orm::{
     ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait,
     QueryFilter, SqlErr, TransactionTrait,
 };
+use sea_orm::sea_query::OnConflict;
 use uuid::Uuid;
 use zed_interfaces::registry::{
     PUBLISH_ARTIFACT_FIELD, PUBLISH_META_FIELD, PublishMeta, PublishResponse,
