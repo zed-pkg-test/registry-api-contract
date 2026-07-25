@@ -167,6 +167,17 @@ pub async fn publish(
     }
 
     tracing::info!(org = %org_slug, name = %name, version = %ver, sha256 = %actual_sha, "published");
+    // Best-effort: the version is already committed, so an audit failure must
+    // not turn a successful publish into an error response (see `audit`).
+    crate::audit::record(
+        &state.db,
+        org_row.id,
+        &token,
+        zed_interfaces::registry::AuditAction::Publish,
+        format!("{org_slug}/{name}@{ver}"),
+        Some(format!("sha256={actual_sha}")),
+    )
+    .await;
     Ok(Json(PublishResponse {
         org: org_slug,
         name,
