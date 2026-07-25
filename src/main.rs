@@ -23,6 +23,58 @@ use crate::state::AppState;
 use crate::storage::ArtifactStore;
 use crate::verify::TagVerifier;
 
+/// Connect to Postgres, retrying until it is reachable or a bounded deadline
+/// passes.
+///
+/// Unlike the read-only web server — which degrades to offline mode — the API
+/// server genuinely requires a database, so this still fails hard once the
+/// deadline is up (k8s then restarts the pod). The retry exists to survive the
+/// ordinary cold-start race: on a fresh rollout, a `docker compose up`, or a
+/// node reboot, the server frequently wins the race against its own Postgres
+/// and against CoreDNS, and a single no-retry `connect` turns that transient
+/// "Temporary failure in name resolution" into CrashLoopBackOff.
+///
+/// Only the initial race needs covering: once the pool exists, sqlx
+/// transparently re-establishes dropped connections across later DB restarts.
+async fn connect_with_retry(cfg: &Config) -> Result<sea_orm::DatabaseConnection> {
+    let max_wait = Duration::from_secs(
+        std::env::var("DB_CONNECT_MAX_WAIT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(30),
+    );
+    let started = std::time::Instant::now();
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let mut connect_opts = ConnectOptions::new(cfg.database_url.clone());
+        connect_opts
+            .max_connections(cfg.db_max_connections)
+            .connect_timeout(Duration::from_secs(5))
+            .acquire_timeout(Duration::from_secs(8))
+            .sqlx_logging(false);
+        match Database::connect(connect_opts).await {
+            Ok(db) => {
+                if attempt > 1 {
+                    tracing::info!(attempt, "connected to Postgres after retry");
+                }
+                return Ok(db);
+            }
+            Err(error) if started.elapsed() >= max_wait => {
+                return Err(anyhow::Error::new(error).context(format!(
+                    "failed to connect to DATABASE_URL after {attempt} attempts \
+                     over {}s (DB_CONNECT_MAX_WAIT_SECS)",
+                    started.elapsed().as_secs()
+                )));
+            }
+            Err(error) => {
+                tracing::warn!(%error, attempt, "Postgres not ready yet; retrying in 2s");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
