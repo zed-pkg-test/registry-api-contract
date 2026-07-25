@@ -83,23 +83,6 @@ pub async fn publish(
         ));
     }
 
-    let org_row = org::Entity::find()
-        .filter(org::Column::Slug.eq(&org_slug))
-        .one(&state.db)
-        .await?
-        .ok_or_else(|| ApiErr {
-            status: StatusCode::NOT_FOUND,
-            code: "org_not_found",
-            message: format!(
-                "org `{org_slug}` does not exist; claim it first with `zed org claim {org_slug}`"
-            ),
-        })?;
-    crate::rbac::authorize_publish(
-        token.org_id,
-        crate::rbac::Role::parse(&token.role),
-        org_row.id,
-    )?;
-
     match state
         .verifier
         .verify(m.repository.vcs, &m.repository.url, &meta.vcs_tag)
