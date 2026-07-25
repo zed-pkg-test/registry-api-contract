@@ -16,8 +16,16 @@ impl MigrationTrait for Migration {
             .alter_table(
                 Table::alter()
                     .table(Token::Table)
-                    .add_column(ColumnDef::new(Token::ExpiresAt).timestamp_with_time_zone().null())
-                    .add_column(ColumnDef::new(Token::RevokedAt).timestamp_with_time_zone().null())
+                    .add_column(
+                        ColumnDef::new(Token::ExpiresAt)
+                            .timestamp_with_time_zone()
+                            .null(),
+                    )
+                    .add_column(
+                        ColumnDef::new(Token::RevokedAt)
+                            .timestamp_with_time_zone()
+                            .null(),
+                    )
                     .to_owned(),
             )
             .await

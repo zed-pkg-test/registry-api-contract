@@ -8,11 +8,11 @@ use axum::body::Bytes;
 use axum::extract::{Multipart, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use chrono::Utc;
+use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait,
     QueryFilter, SqlErr, TransactionTrait,
 };
-use sea_orm::sea_query::OnConflict;
 use uuid::Uuid;
 use zed_interfaces::registry::{
     PUBLISH_ARTIFACT_FIELD, PUBLISH_META_FIELD, PublishMeta, PublishResponse,
@@ -351,11 +351,9 @@ mod tests {
         // (idx_package_org_name); recreate it so the publish upsert's
         // ON CONFLICT (org_id, name) matches a real constraint, exactly as in
         // production (migration m20260723_000001_init).
-        db.execute_unprepared(
-            "CREATE UNIQUE INDEX idx_package_org_name ON package (org_id, name)",
-        )
-        .await
-        .expect("create unique index");
+        db.execute_unprepared("CREATE UNIQUE INDEX idx_package_org_name ON package (org_id, name)")
+            .await
+            .expect("create unique index");
         db
     }
 

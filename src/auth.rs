@@ -67,4 +67,107 @@ mod tests {
         );
         assert_eq!(bearer_token(&headers).as_deref(), Some("zpkg_abc"));
     }
+
+    // --- token lifecycle (M2) ------------------------------------------------
+
+    use chrono::{Duration, Utc};
+    use sea_orm::{
+        ActiveModelTrait, ActiveValue, ConnectOptions, ConnectionTrait, Database, Schema,
+    };
+
+    async fn lifecycle_db() -> DatabaseConnection {
+        let mut opts = ConnectOptions::new("sqlite::memory:".to_string());
+        opts.max_connections(1)
+            .min_connections(1)
+            .sqlx_logging(false);
+        let db = Database::connect(opts).await.unwrap();
+        let backend = db.get_database_backend();
+        let schema = Schema::new(backend);
+        db.execute(backend.build(&schema.create_table_from_entity(token::Entity)))
+            .await
+            .unwrap();
+        db
+    }
+
+    /// Insert a token with the given lifecycle stamps; returns the plaintext.
+    async fn seed(
+        db: &DatabaseConnection,
+        expires_at: Option<chrono::DateTime<Utc>>,
+        revoked_at: Option<chrono::DateTime<Utc>>,
+    ) -> String {
+        let plaintext = format!("zpkg_{}", uuid::Uuid::new_v4().simple());
+        token::ActiveModel {
+            id: ActiveValue::Set(uuid::Uuid::new_v4()),
+            name: ActiveValue::Set("t".to_string()),
+            token_hash: ActiveValue::Set(hash_token(&plaintext)),
+            org_id: ActiveValue::Set(None),
+            role: ActiveValue::Set("owner".to_string()),
+            created_at: ActiveValue::Set(Utc::now()),
+            expires_at: ActiveValue::Set(expires_at),
+            revoked_at: ActiveValue::Set(revoked_at),
+        }
+        .insert(db)
+        .await
+        .unwrap();
+        plaintext
+    }
+
+    fn bearer(plaintext: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {plaintext}").parse().unwrap(),
+        );
+        headers
+    }
+
+    /// A token with both stamps NULL is the historical, always-valid token.
+    #[tokio::test]
+    async fn live_token_is_accepted() {
+        let db = lifecycle_db().await;
+        let plaintext = seed(&db, None, None).await;
+        assert!(require_token(&db, &bearer(&plaintext)).await.is_ok());
+    }
+
+    /// A revoked token is rejected — indistinguishable from an unknown one.
+    #[tokio::test]
+    async fn revoked_token_is_rejected() {
+        let db = lifecycle_db().await;
+        // Revoked in the past, and never expiring: revocation alone must kill it.
+        let plaintext = seed(&db, None, Some(Utc::now() - Duration::minutes(1))).await;
+        let err = require_token(&db, &bearer(&plaintext))
+            .await
+            .expect_err("a revoked token must not authenticate");
+        assert_eq!(err.code, "unauthorized");
+    }
+
+    /// Expiry is enforced at the boundary: past expiry fails, future is fine.
+    #[tokio::test]
+    async fn expired_token_is_rejected_but_future_expiry_is_accepted() {
+        let db = lifecycle_db().await;
+        let expired = seed(&db, Some(Utc::now() - Duration::seconds(1)), None).await;
+        let err = require_token(&db, &bearer(&expired))
+            .await
+            .expect_err("an expired token must not authenticate");
+        assert_eq!(err.code, "unauthorized");
+
+        let live = seed(&db, Some(Utc::now() + Duration::days(1)), None).await;
+        let row = require_token(&db, &bearer(&live))
+            .await
+            .expect("a token expiring tomorrow is still valid");
+        assert!(row.expires_at.is_some());
+    }
+
+    /// Revocation wins even when the token has not expired yet.
+    #[tokio::test]
+    async fn revocation_beats_a_valid_expiry() {
+        let db = lifecycle_db().await;
+        let plaintext = seed(
+            &db,
+            Some(Utc::now() + Duration::days(30)),
+            Some(Utc::now() - Duration::seconds(1)),
+        )
+        .await;
+        assert!(require_token(&db, &bearer(&plaintext)).await.is_err());
+    }
 }

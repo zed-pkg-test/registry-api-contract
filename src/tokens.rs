@@ -26,9 +26,9 @@ pub async fn create_token(args: &[String]) -> Result<()> {
             }
             "--expires-in-days" => {
                 let raw = iter.next().context("--expires-in-days needs a value")?;
-                let days: i64 = raw
-                    .parse()
-                    .with_context(|| format!("--expires-in-days must be a positive integer (got `{raw}`)"))?;
+                let days: i64 = raw.parse().with_context(|| {
+                    format!("--expires-in-days must be a positive integer (got `{raw}`)")
+                })?;
                 if days <= 0 {
                     bail!("--expires-in-days must be positive (got {days})");
                 }
