@@ -95,6 +95,11 @@ async fn main() -> Result<()> {
     }
 
     let cfg = Config::from_env()?;
+    if auth::auth_disabled() {
+        tracing::warn!(
+            "AUTHENTICATION IS DISABLED (ZED_AUTH_DISABLED=1); every caller has admin authority"
+        );
+    }
     let db = connect_with_retry(&cfg).await?;
     if cfg.auto_migrate {
         migration::Migrator::up(&db, None)
