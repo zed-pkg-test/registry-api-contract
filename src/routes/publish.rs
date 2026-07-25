@@ -8,6 +8,7 @@ use axum::body::Bytes;
 use axum::extract::{Multipart, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use chrono::Utc;
+use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait,
     QueryFilter, SqlErr, TransactionTrait,
@@ -253,48 +254,49 @@ async fn upsert_package<C: ConnectionTrait>(
     meta: &PublishMeta,
 ) -> ApiResult<package::Model> {
     let m = &meta.manifest.package;
-    match package::Entity::find()
+    // Atomic create-or-update keyed on the (org_id, name) unique index. Using
+    // ON CONFLICT DO UPDATE rather than find-then-insert-or-update is what makes
+    // concurrent first-publishes of a new package safe: the racer that loses the
+    // INSERT still gets the existing row back (RETURNING), instead of a unique-
+    // constraint violation that aborts the surrounding transaction and drops its
+    // otherwise-valid, distinct version. `created_at` is intentionally NOT in the
+    // update set, so a re-publish preserves the original creation time.
+    package::Entity::insert(package::ActiveModel {
+        id: ActiveValue::Set(Uuid::new_v4()),
+        org_id: ActiveValue::Set(org_row.id),
+        name: ActiveValue::Set(name.to_string()),
+        description: ActiveValue::Set(m.description.clone()),
+        vcs: ActiveValue::Set(m.repository.vcs.to_string()),
+        repo_url: ActiveValue::Set(m.repository.url.clone()),
+        version_scheme: ActiveValue::Set(m.version_scheme.as_str().to_string()),
+        created_at: ActiveValue::Set(Utc::now()),
+    })
+    .on_conflict(
+        OnConflict::columns([package::Column::OrgId, package::Column::Name])
+            .update_columns([
+                package::Column::Description,
+                package::Column::Vcs,
+                package::Column::RepoUrl,
+                package::Column::VersionScheme,
+            ])
+            .to_owned(),
+    )
+    // .exec (not exec_with_returning): RETURNING on an upsert isn't emitted
+    // portably across Postgres + the SQLite used in tests. The upsert itself
+    // never violates the constraint, so it does not abort the transaction; we
+    // then read the row back within the same txn.
+    .exec(conn)
+    .await?;
+    package::Entity::find()
         .filter(package::Column::OrgId.eq(org_row.id))
         .filter(package::Column::Name.eq(name))
         .one(conn)
         .await?
-    {
-        Some(existing) => {
-            let mut active: package::ActiveModel = existing.into();
-            active.description = ActiveValue::Set(m.description.clone());
-            active.vcs = ActiveValue::Set(m.repository.vcs.to_string());
-            active.repo_url = ActiveValue::Set(m.repository.url.clone());
-            active.version_scheme = ActiveValue::Set(m.version_scheme.as_str().to_string());
-            Ok(active.update(conn).await?)
-        }
-        None => {
-            let insert = package::ActiveModel {
-                id: ActiveValue::Set(Uuid::new_v4()),
-                org_id: ActiveValue::Set(org_row.id),
-                name: ActiveValue::Set(name.to_string()),
-                description: ActiveValue::Set(m.description.clone()),
-                vcs: ActiveValue::Set(m.repository.vcs.to_string()),
-                repo_url: ActiveValue::Set(m.repository.url.clone()),
-                version_scheme: ActiveValue::Set(m.version_scheme.as_str().to_string()),
-                created_at: ActiveValue::Set(Utc::now()),
-            }
-            .insert(conn)
-            .await;
-            match insert {
-                Ok(pkg) => Ok(pkg),
-                // A concurrent first-publish can win the (org_id, name) unique
-                // index between the read above and this insert; surface a clean
-                // 409 rather than a 500 (M6).
-                Err(err) if matches!(err.sql_err(), Some(SqlErr::UniqueConstraintViolation(_))) => {
-                    Err(ApiErr::conflict(
-                        "package_conflict",
-                        format!("package `{name}` was just created by a concurrent publish; retry"),
-                    ))
-                }
-                Err(err) => Err(err.into()),
-            }
-        }
-    }
+        .ok_or_else(|| ApiErr {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "package_upsert_missing",
+            message: "package row missing immediately after upsert".to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -345,6 +347,13 @@ mod tests {
                 .await
                 .expect("create table");
         }
+        // create_table_from_entity omits the migration's composite unique index
+        // (idx_package_org_name); recreate it so the publish upsert's
+        // ON CONFLICT (org_id, name) matches a real constraint, exactly as in
+        // production (migration m20260723_000001_init).
+        db.execute_unprepared("CREATE UNIQUE INDEX idx_package_org_name ON package (org_id, name)")
+            .await
+            .expect("create unique index");
         db
     }
 
