@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use aws_sdk_s3::presigning::PresigningConfig;
+use bytes::Bytes;
 
 use crate::config::StorageConfig;
 
