@@ -313,6 +313,76 @@ mod tests {
         assert!(matches!(err, ExtractError::TooLarge));
     }
 
+    /// A tar.gz of `entries` highly-compressible entries of `each` bytes, none
+    /// of which is the file we ask for — so the scan must skip past all of them.
+    fn compressible_archive(entries: usize, each: usize) -> Vec<u8> {
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let zeros = vec![0u8; each];
+        for i in 0..entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(format!("pkg/filler-{i}.bin")).unwrap();
+            header.set_size(each as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append(&header, &zeros[..]).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// Skipping past unmatched tar entries fully inflates them (GzDecoder is
+    /// not Seek), so without an aggregate budget one unauthenticated request
+    /// for a path that isn't in the archive inflates the entire bomb.
+    #[test]
+    fn aggregate_inflation_budget_stops_a_gzip_bomb() {
+        // 64 MiB inflated, ~64 KiB on the wire.
+        let archive = compressible_archive(64, 1024 * 1024);
+        assert!(
+            archive.len() < 1024 * 1024,
+            "bomb should be tiny compressed, got {} bytes",
+            archive.len()
+        );
+
+        // Budget below the inflated size => the scan is cut off rather than
+        // inflating everything looking for a name that isn't there.
+        temp_env_var("ZED_MAX_INFLATED_BYTES", "8388608", || {
+            let err = extract_file(&archive, ArtifactFormat::TarGz, "not-here.bin").unwrap_err();
+            assert!(
+                matches!(err, ExtractError::InflationBudgetExceeded),
+                "expected budget stop, got {err:?}"
+            );
+        });
+
+        // Budget above it => an honest (if large) archive still scans cleanly
+        // and reports a genuine miss.
+        temp_env_var("ZED_MAX_INFLATED_BYTES", "134217728", || {
+            let found = extract_file(&archive, ArtifactFormat::TarGz, "not-here.bin").unwrap();
+            assert!(found.is_none());
+        });
+    }
+
+    /// The budget must not break ordinary lookups.
+    #[test]
+    fn budget_does_not_affect_normal_extraction() {
+        let archive = tiny_archive();
+        let found = extract_file(&archive, ArtifactFormat::TarGz, "dist/style.css").unwrap();
+        assert_eq!(found.unwrap(), b"body { color: orange }");
+    }
+
+    /// Env mutation is process-global; keep it scoped and serialized so these
+    /// tests can't leak into the rest of the suite.
+    fn temp_env_var(key: &str, value: &str, f: impl FnOnce()) {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var(key).ok();
+        unsafe { std::env::set_var(key, value) };
+        f();
+        match prev {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+
     #[test]
     fn mime_guessing() {
         assert_eq!(mime_for("dist/style.css"), "text/css; charset=utf-8");
