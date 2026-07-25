@@ -10,7 +10,10 @@
 # RUSTUP_TOOLCHAIN (set to the base image's exact version) overrides the repo's
 # rust-toolchain.toml (channel = "stable"), so a Docker build uses the installed
 # toolchain and never downloads a floating one — reproducible, no build-time CDN.
-FROM rust:1.97-slim AS build
+# -bookworm (not the default trixie) so the build glibc matches the
+# debian:12-slim (bookworm) runtime stage below — a trixie build links against
+# GLIBC_2.39 that bookworm's 2.36 does not provide.
+FROM rust:1.97-slim-bookworm AS build
 ENV RUSTUP_TOOLCHAIN=1.97.1
 WORKDIR /work
 COPY zed-interfaces ./zed-interfaces
