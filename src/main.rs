@@ -3,6 +3,7 @@ mod config;
 mod entities;
 mod error;
 mod files;
+mod ratelimit;
 mod rbac;
 mod routes;
 mod state;
