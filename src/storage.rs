@@ -105,8 +105,9 @@ impl ArtifactStore {
     pub async fn download(&self, key: &str) -> Result<Download> {
         match self {
             Self::Local { dir } => {
-                let bytes = tokio::fs::read(Self::local_path(dir, key)).await?;
-                Ok(Download::Bytes(bytes))
+                let file = tokio::fs::File::open(Self::local_path(dir, key)).await?;
+                let len = file.metadata().await?.len();
+                Ok(Download::File { file, len })
             }
             Self::S3 { client, bucket } => {
                 let presigned = client
