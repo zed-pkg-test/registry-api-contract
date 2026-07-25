@@ -4,8 +4,13 @@
 #   docker build -f zed-api-server.rs/Dockerfile -t ghcr.io/zed-pkg/zed-api-server:dev .
 #
 # Base images are pinned to explicit minor tags (not floating rust:1-slim /
-# debian:stable-slim) so rebuilds are reproducible.
-FROM rust:1.83-slim AS build
+# debian:stable-slim) so rebuilds are reproducible. The toolchain must be
+# >= 1.85 for the crate's `edition = "2024"`. RUSTUP_TOOLCHAIN pins the build to
+# the base image's toolchain and overrides the repo's rust-toolchain.toml
+# (channel = "stable"), so a Docker build never downloads a floating stable
+# toolchain at build time — reproducible, and no build-time CDN dependency.
+FROM rust:1.90-slim AS build
+ENV RUSTUP_TOOLCHAIN=1.90.0
 WORKDIR /work
 COPY zed-interfaces ./zed-interfaces
 COPY zed-api-server.rs ./zed-api-server.rs
