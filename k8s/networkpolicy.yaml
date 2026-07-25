@@ -38,6 +38,14 @@ spec:
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+    # TEMPORARY bootstrap metadata database, namespace-local and selected
+    # explicitly. Remove with the in-memory Postgres profile.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: zed-postgres
+      ports:
+        - { protocol: TCP, port: 5432 }
     # Postgres (Supabase direct 5432 / pooler 6543) and Cloudflare R2 + the
     # GitHub API for tag verification (both 443) are external services reached
     # over the internet, per the cluster contract ("Databases: Supabase/Postgres

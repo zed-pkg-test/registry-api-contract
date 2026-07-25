@@ -64,9 +64,11 @@ spec:
             - { name: AUTO_MIGRATE, value: "true" }
             - { name: MAX_ARTIFACT_BYTES, value: "104857600" }
             - { name: RUST_LOG, value: "info" }
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef: { name: dd-zed-api-secrets, key: ZED_API_DATABASE_URL }
+            # TEMPORARY bootstrap database. The platform layer runs an
+            # in-memory Postgres in this namespace with trust auth and an
+            # ingress policy limited to Zed pods. Restore the ExternalSecret
+            # before switching to durable production metadata.
+            - { name: DATABASE_URL, value: "postgres://zed@zed-postgres.zed.svc.cluster.local:5432/zed" }
           # A DB/R2 blip should take the pod out of the Service, not restart it.
           readinessProbe:
             httpGet: { path: /healthz, port: http }
