@@ -289,6 +289,8 @@ async fn upsert_package<C: ConnectionTrait>(
         vcs: ActiveValue::Set(m.repository.vcs.to_string()),
         repo_url: ActiveValue::Set(m.repository.url.clone()),
         version_scheme: ActiveValue::Set(m.version_scheme.as_str().to_string()),
+        // Tags for multi-tag lookup are sourced from the manifest keywords.
+        tags: ActiveValue::Set(serde_json::json!(m.keywords)),
         created_at: ActiveValue::Set(Utc::now()),
     })
     .on_conflict(
@@ -298,6 +300,7 @@ async fn upsert_package<C: ConnectionTrait>(
                 package::Column::Vcs,
                 package::Column::RepoUrl,
                 package::Column::VersionScheme,
+                package::Column::Tags,
             ])
             .to_owned(),
     )
@@ -430,6 +433,7 @@ mod tests {
             vcs: ActiveValue::Set("git".to_string()),
             repo_url: ActiveValue::Set("https://github.com/acme/http-kit".to_string()),
             version_scheme: ActiveValue::Set("semver".to_string()),
+            tags: ActiveValue::Set(serde_json::json!([])),
             created_at: ActiveValue::Set(Utc::now()),
         }
         .insert(db)

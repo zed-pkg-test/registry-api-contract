@@ -4,5 +4,6 @@
 pub mod audit_log;
 pub mod org;
 pub mod package;
+pub mod package_embedding;
 pub mod token;
 pub mod version;

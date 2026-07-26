@@ -1,6 +1,7 @@
 mod audit;
 mod auth;
 mod config;
+mod embeddings;
 mod entities;
 mod error;
 mod files;

@@ -5,10 +5,12 @@
 
 mod artifacts;
 mod audit;
+mod list;
 mod orgs;
 mod packages;
 mod publish;
 mod search;
+mod semantic;
 mod yank;
 
 use std::sync::Arc;
@@ -29,6 +31,9 @@ pub const ROUTE_VERSION: &str = "/v1/packages/{org}/{name}/versions/{version}";
 pub const ROUTE_YANK: &str = "/v1/packages/{org}/{name}/versions/{version}/yank";
 pub const ROUTE_ARTIFACT: &str = "/v1/artifacts/{sha256}";
 pub const ROUTE_SEARCH: &str = "/v1/search";
+pub const ROUTE_PACKAGES_LIST: &str = "/v1/packages";
+pub const ROUTE_SEMANTIC: &str = "/v1/search/semantic";
+pub const ROUTE_EMBEDDING: &str = "/v1/packages/{org}/{name}/embedding";
 pub const ROUTE_ORGS: &str = "/v1/orgs";
 pub const ROUTE_AUDIT: &str = "/v1/orgs/{org}/audit";
 pub const ROUTE_FILES: &str = "/v1/files/{org}/{name}/{version}/{*path}";
@@ -82,9 +87,15 @@ pub fn router(state: Arc<AppState>, max_artifact_bytes: usize) -> Router {
 
     Router::new()
         .route("/healthz", get(healthz))
+        .route(ROUTE_PACKAGES_LIST, get(list::list_packages))
         .route(ROUTE_PACKAGE, get(packages::get_package))
+        .route(
+            ROUTE_EMBEDDING,
+            axum::routing::put(semantic::upsert_embedding),
+        )
         .route(ROUTE_YANK, post(yank::yank))
         .route(ROUTE_SEARCH, get(search::search))
+        .route(ROUTE_SEMANTIC, post(semantic::semantic_search))
         .route(ROUTE_ORGS, post(orgs::claim_org))
         .route(ROUTE_AUDIT, get(audit::get_audit_log))
         .merge(artifact_routes)
@@ -150,6 +161,19 @@ pub(super) fn sort_versions_desc(versions: &mut [String]) {
     zed_interfaces::version::sort_desc(versions);
 }
 
+/// Extract a package's tags (stored as a JSON array of strings) into a Vec.
+/// Tolerates a malformed/legacy value by yielding an empty list.
+pub(super) fn tags_of(pkg: &package::Model) -> Vec<String> {
+    pkg.tags
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Parse the stored `format` column ("tar.gz" / "zip") back into the shared
 /// enum; unknown spellings fall back to the default (tar.gz).
 pub(super) fn artifact_format(format: &str) -> ArtifactFormat {
@@ -210,6 +234,9 @@ mod tests {
         assert_eq!(fill(ROUTE_YANK), r::yank_path("acme", "http-kit", "1.2.0"));
         assert_eq!(fill(ROUTE_ARTIFACT), r::artifact_path("abc"));
         assert_eq!(ROUTE_SEARCH, r::search_path());
+        assert_eq!(ROUTE_PACKAGES_LIST, r::packages_list_path());
+        assert_eq!(ROUTE_SEMANTIC, r::semantic_search_path());
+        assert_eq!(fill(ROUTE_EMBEDDING), r::embedding_path("acme", "http-kit"));
         assert_eq!(ROUTE_ORGS, r::orgs_path());
         assert_eq!(fill(ROUTE_AUDIT), r::audit_path("acme"));
         assert_eq!(

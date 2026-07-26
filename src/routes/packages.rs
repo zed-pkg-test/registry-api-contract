@@ -26,6 +26,8 @@ pub async fn get_package(
         .await?;
     let mut versions: Vec<String> = rows.iter().map(|r| r.version.clone()).collect();
     sort_versions_desc(&mut versions);
+    // Compute before moving fields out of `pkg`.
+    let tags = super::tags_of(&pkg);
     Ok(Json(PackageMetadata {
         org: org_slug,
         name,
@@ -36,6 +38,7 @@ pub async fn get_package(
             &pkg.version_scheme,
         ),
         latest: versions.first().cloned(),
+        tags,
         versions,
     }))
 }

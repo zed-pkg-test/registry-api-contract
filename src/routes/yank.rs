@@ -152,6 +152,7 @@ mod tests {
             vcs: ActiveValue::Set("git".to_string()),
             repo_url: ActiveValue::Set("https://github.com/acme/http-kit".to_string()),
             version_scheme: ActiveValue::Set("semver".to_string()),
+            tags: ActiveValue::Set(serde_json::json!([])),
             created_at: ActiveValue::Set(Utc::now()),
         }
         .insert(&state.db)
