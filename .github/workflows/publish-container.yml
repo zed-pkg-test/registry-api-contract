@@ -38,7 +38,10 @@ jobs:
     timeout-minutes: 45
     services:
       postgres:
-        image: postgres:16-alpine
+        # Migration m20260726_000007_embeddings_and_tags creates the vector
+        # extension. A plain postgres image cannot satisfy that production
+        # schema, so test the container against the exact bootstrap capability.
+        image: pgvector/pgvector:0.8.5-pg16
         env:
           POSTGRES_USER: zed
           POSTGRES_DB: zed
