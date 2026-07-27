@@ -18,18 +18,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Render AWS and Hetzner overlays
+
+      - name: Render AWS overlay
+        run: kubectl kustomize k8s/overlays/aws > /tmp/aws.yaml
+
+      - name: Render Hetzner overlay
+        run: kubectl kustomize k8s/overlays/hetzner > /tmp/hetzner.yaml
+
+      - name: Verify RAM-backed singleton storage
         shell: bash
         run: |
           set -euo pipefail
-          kubectl kustomize k8s/overlays/aws > /tmp/aws.yaml
-          kubectl kustomize k8s/overlays/hetzner > /tmp/hetzner.yaml
-          for cloud in aws hetzner; do
-            rendered="/tmp/${cloud}.yaml"
+          for rendered in /tmp/aws.yaml /tmp/hetzner.yaml; do
             grep -q 'medium: Memory' "$rendered"
             grep -q 'replicas: 1' "$rendered"
             grep -q 'name: STORAGE_BACKEND' "$rendered"
             grep -q 'value: local' "$rendered"
-            grep -q "registry.${cloud}.zpkg.tech" "$rendered"
             grep -q 'image: ghcr.io/zed-pkg/zed-api-server:main' "$rendered"
           done
+
+      - name: Verify cloud-local registry hosts
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'registry.aws.zpkg.tech' /tmp/aws.yaml
+          grep -q 'registry.hetzner.zpkg.tech' /tmp/hetzner.yaml
