@@ -1,0 +1,35 @@
+name: k8s contract
+
+on:
+  push:
+    branches: [main]
+    paths: ['k8s/**', '.github/workflows/k8s-contract.yml']
+  pull_request:
+    paths: ['k8s/**', '.github/workflows/k8s-contract.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Render AWS and Hetzner overlays
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl kustomize k8s/overlays/aws > /tmp/aws.yaml
+          kubectl kustomize k8s/overlays/hetzner > /tmp/hetzner.yaml
+          for cloud in aws hetzner; do
+            rendered="/tmp/${cloud}.yaml"
+            grep -q 'medium: Memory' "$rendered"
+            grep -q 'replicas: 1' "$rendered"
+            grep -q 'name: STORAGE_BACKEND' "$rendered"
+            grep -q 'value: local' "$rendered"
+            grep -q "registry.${cloud}.zpkg.tech" "$rendered"
+            grep -q 'image: ghcr.io/zed-pkg/zed-api-server:main' "$rendered"
+          done
