@@ -1,0 +1,158 @@
+name: publish container
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'src/**'
+      - 'migration/**'
+      - 'Dockerfile'
+      - 'k8s/**'
+      - '.github/workflows/publish-container.yml'
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'src/**'
+      - 'migration/**'
+      - 'Dockerfile'
+      - 'k8s/**'
+      - '.github/workflows/publish-container.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        # Migration m20260726_000007_embeddings_and_tags creates the vector
+        # extension. A plain postgres image cannot satisfy that production
+        # schema, so test the container against the exact bootstrap capability.
+        image: pgvector/pgvector:0.8.5-pg16
+        env:
+          POSTGRES_USER: zed
+          POSTGRES_DB: zed
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zed -d zed"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - name: Checkout API source
+        uses: actions/checkout@v4
+        with:
+          path: zed-api-server.rs
+          persist-credentials: false
+
+      - name: Checkout shared interfaces
+        uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: main
+          path: zed-interfaces
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the exact deployable image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: zed-api-server.rs/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: |
+            ghcr.io/zed-pkg/zed-api-server:${{ github.sha }}
+            ghcr.io/zed-pkg/zed-api-server:main
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start the API image against Postgres and local storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name zed-api-smoke --network host \
+            -e BIND_ADDR=127.0.0.1:48080 \
+            -e DATABASE_URL=postgres://zed@127.0.0.1:5432/zed \
+            -e AUTO_MIGRATE=true \
+            -e STORAGE_BACKEND=local \
+            -e STORAGE_LOCAL_DIR=/tmp/zed-artifacts \
+            -e PUBLIC_BASE_URL=http://127.0.0.1:48080 \
+            -e ZED_AUTH_DISABLED=1 \
+            -e ZED_RATE_LIMIT_DISABLED=1 \
+            -e ZED_VERIFY_TAGS=off \
+            ghcr.io/zed-pkg/zed-api-server:${{ github.sha }}
+
+      - name: Wait for migrations, RAM-backed storage, and health
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 60); do
+            if ! docker ps --format '{{.Names}}' | grep -qx zed-api-smoke; then
+              echo 'registry container exited before becoming healthy' >&2
+              exit 1
+            fi
+            if curl -fsS http://127.0.0.1:48080/healthz; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'registry image never became healthy' >&2
+          exit 1
+
+      - name: Capture API smoke diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p smoke-diagnostics
+          docker logs zed-api-smoke > smoke-diagnostics/container.log 2>&1
+          docker inspect zed-api-smoke > smoke-diagnostics/container-inspect.json 2>&1
+          docker ps -a > smoke-diagnostics/docker-ps.txt 2>&1
+          sed -n '1,240p' smoke-diagnostics/container.log
+
+      - name: Upload API smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-api-container-smoke
+          path: smoke-diagnostics/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove API smoke container
+        if: always()
+        run: docker rm -f zed-api-smoke >/dev/null 2>&1 || true
+
+      - name: Push immutable and main tags
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker push ghcr.io/zed-pkg/zed-api-server:${{ github.sha }}
+          docker push ghcr.io/zed-pkg/zed-api-server:main
