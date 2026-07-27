@@ -89,7 +89,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Smoke-test migrations, RAM-backed storage, and health
+      - name: Start the API image against Postgres and local storage
         shell: bash
         run: |
           set -euo pipefail
@@ -104,17 +104,47 @@ jobs:
             -e ZED_RATE_LIMIT_DISABLED=1 \
             -e ZED_VERIFY_TAGS=off \
             ghcr.io/zed-pkg/zed-api-server:${{ github.sha }}
-          cleanup() {
-            docker logs zed-api-smoke || true
-            docker rm -f zed-api-smoke >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
+
+      - name: Wait for migrations, RAM-backed storage, and health
+        shell: bash
+        run: |
+          set -euo pipefail
           for _ in $(seq 1 60); do
-            curl -fsS http://127.0.0.1:48080/healthz && exit 0
+            if ! docker ps --format '{{.Names}}' | grep -qx zed-api-smoke; then
+              echo 'registry container exited before becoming healthy' >&2
+              exit 1
+            fi
+            if curl -fsS http://127.0.0.1:48080/healthz; then
+              exit 0
+            fi
             sleep 2
           done
           echo 'registry image never became healthy' >&2
           exit 1
+
+      - name: Capture API smoke diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p smoke-diagnostics
+          docker logs zed-api-smoke > smoke-diagnostics/container.log 2>&1
+          docker inspect zed-api-smoke > smoke-diagnostics/container-inspect.json 2>&1
+          docker ps -a > smoke-diagnostics/docker-ps.txt 2>&1
+          sed -n '1,240p' smoke-diagnostics/container.log
+
+      - name: Upload API smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-api-container-smoke
+          path: smoke-diagnostics/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove API smoke container
+        if: always()
+        run: docker rm -f zed-api-smoke >/dev/null 2>&1 || true
 
       - name: Push immutable and main tags
         if: github.event_name != 'pull_request'
