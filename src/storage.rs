@@ -122,26 +122,6 @@ impl ArtifactStore {
         }
     }
 
-    /// Remove a stored artifact (best-effort cleanup paths).
-    pub async fn delete(&self, key: &str) -> Result<()> {
-        match self {
-            Self::Local { dir } => {
-                tokio::fs::remove_file(Self::local_path(dir, key)).await?;
-                Ok(())
-            }
-            Self::S3 { client, bucket } => {
-                client
-                    .delete_object()
-                    .bucket(bucket)
-                    .key(key)
-                    .send()
-                    .await
-                    .context("s3 delete_object failed")?;
-                Ok(())
-            }
-        }
-    }
-
     /// Full artifact bytes regardless of backend (for /v1/files extraction,
     /// which must seek within the archive). Refuses anything larger than
     /// [`MAX_BUFFERED_ARTIFACT_BYTES`] *before* allocating, so a huge object

@@ -99,6 +99,16 @@ Clone side by side with `zed-interfaces` (path dependency). `cargo test`
 runs without Postgres or network; DB-backed handler paths are exercised via
 the compose stack (not unit-tested yet — known gap).
 
+## Formal methods
+
+[`formal/fm.toml`](formal/fm.toml) defines a schema-v1 `fmctl` gate for the
+package-publication state machine. Its Quint model exhaustively checks the
+finite concurrent-publisher state graph for a single immutable winner, atomic
+advertisement/metadata visibility, fail-closed authorization, and committed
+artifact availability. See [`formal/README.md`](formal/README.md) for bounds,
+failure witnesses, the concurrency finding behind retained failed-upload
+blobs, and an explicit account of what is not proved.
+
 ## License
 
 MIT
