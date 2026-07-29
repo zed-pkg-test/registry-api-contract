@@ -19,7 +19,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      FMCTL: .formal-tools/opto-sync-clients/tools/fmctl/target/release/fmctl
       NO_COLOR: '1'
       RUST_BACKTRACE: '1'
     steps:
@@ -54,12 +53,17 @@ jobs:
           java-version: 21
 
       - name: Build the pinned fmctl runner
-        run: >-
-          cargo build
-          --locked
-          --release
-          --manifest-path
-          .formal-tools/opto-sync-clients/tools/fmctl/Cargo.toml
+        run: |
+          # Build outside the Zed Cargo workspace. Leaving the standalone crate
+          # beneath this repository makes Cargo discover the product workspace
+          # and resolve product-only path dependencies before compiling fmctl.
+          mkdir -p "$RUNNER_TEMP/fmctl-source"
+          cp -R .formal-tools/opto-sync-clients/tools/fmctl/. "$RUNNER_TEMP/fmctl-source/"
+          cargo build \
+            --locked \
+            --release \
+            --manifest-path "$RUNNER_TEMP/fmctl-source/Cargo.toml"
+          echo "FMCTL=$RUNNER_TEMP/fmctl-source/target/release/fmctl" >> "$GITHUB_ENV"
 
       - name: Validate the formal-methods manifest
         run: |
