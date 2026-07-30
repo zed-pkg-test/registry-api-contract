@@ -43,8 +43,7 @@ jobs:
             grep -q 'image: ghcr.io/zed-pkg/zed-api-server:main' "$rendered"
           done
 
-      - name: Prove temporary bypasses are cluster-local
-        shell: bash
+      - name: Prove temporary bypasses are cluster-local        shell: bash
         run: |
           set -euo pipefail
           for rendered in /tmp/aws.yaml /tmp/hetzner.yaml; do
@@ -56,8 +55,7 @@ jobs:
             ! grep -q 'port: 6543' "$rendered"
             grep -q 'kubernetes.io/metadata.name: observability' "$rendered"
             grep -q 'app.kubernetes.io/part-of: zed' "$rendered"
-            grep -q 'app: zed-postgres' "$rendered"
-            grep -q 'kind: Service' "$rendered"
+            grep -q 'app: zed-postgres' "$rendered"            grep -q 'kind: Service' "$rendered"
             grep -q 'type: ClusterIP' "$rendered"
           done
           grep -q 'registry.aws.zpkg.tech' /tmp/aws.yaml
