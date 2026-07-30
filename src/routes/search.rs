@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Query, State};
 use sea_orm::sea_query::LikeExpr;
-use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QuerySelect};
 use serde::Deserialize;
 use zed_interfaces::registry::{PackageSummary, SearchResponse};
 
@@ -74,13 +74,11 @@ pub async fn search(
         if !has_all_tags(&tags, &want_tags) {
             continue;
         }
-        let latest = version::Entity::find()
+        let versions = version::Entity::find()
             .filter(version::Column::PackageId.eq(pkg.id))
-            .filter(version::Column::Yanked.eq(false))
-            .order_by_desc(version::Column::PublishedAt)
-            .one(&state.db)
-            .await?
-            .map(|v| v.version);
+            .all(&state.db)
+            .await?;
+        let latest = super::latest_visible_version(&versions);
         items.push(PackageSummary {
             org: org_row.slug,
             name: pkg.name,

@@ -47,6 +47,24 @@ abort-after-upload, unauthorized-rejection, and same-digest-race witnesses.
 Those witnesses prevent a green safety result caused by accidentally disabling
 the fault paths.
 
+## Latest-selection and yank model
+
+`latest_selection.qnt`, configured by `latest_selection.fm.toml`, models three
+totally ordered immutable versions. It explores every publication order plus
+yank, restore, and idempotent desired-state replay. The composed
+`selection_safety` invariant checks that:
+
+1. only published versions can be yanked;
+2. advertised latest is exactly the maximal published, non-yanked version;
+3. a yanked version is never advertised as latest; and
+4. no latest value is advertised exactly when no visible version exists.
+
+Simulation must reach an older version published after a newer one, yanking the
+current latest, restoring a newer version, replaying an already-applied state,
+and the all-versions-yanked state. The integer identities abstract the shared
+Rust version comparator into a finite total order; Rust regression tests check
+the concrete semantic-version and timestamp-independent selection behavior.
+
 ## Concurrency finding: retain before safe garbage collection
 
 The model makes artifact availability a safety property. Immediate blob
@@ -75,31 +93,41 @@ fmctl doctor
 fmctl check
 fmctl simulate
 fmctl verify
+
+fmctl --manifest formal/latest_selection.fm.toml validate
+fmctl --manifest formal/latest_selection.fm.toml check
+fmctl --manifest formal/latest_selection.fm.toml simulate
+fmctl --manifest formal/latest_selection.fm.toml verify
 ```
 
-The manifest pins Quint `0.32.0`, bounds simulation to 5,000 samples and 16
-steps, bounds retained child output to 8 MiB, and gives each operation a
-10-minute wall-clock budget. `verify` uses TLC to exhaust the complete finite
-state graph induced by this model.
+Both manifests pin Quint `0.32.0`, bound simulation to 5,000 samples (16 steps
+for publication and 12 for latest selection), bound retained child output to 8
+MiB, and give each operation a 10-minute wall-clock budget. `verify` uses TLC
+to exhaust each complete finite state graph.
 
 Normalized stdout, stderr, and result records are written beneath
-`.formal-artifacts/fmctl/`. CI uploads that directory even when verification
-fails, so counterexamples and exact command provenance remain inspectable.
+`.formal-artifacts/fmctl/` for publication and
+`.formal-artifacts/latest-selection/fmctl/` for selection. CI uploads both even
+when verification fails, so counterexamples and exact command provenance
+remain inspectable.
 
 ## What this proves—and what it does not
 
 A green `fmctl verify` proves `publication_safety` for every reachable state in
-this deliberately small abstract model. It does not by itself prove:
+the publication model and `selection_safety` for every reachable state in the
+latest-selection model. It does not by itself prove:
 
 - that every Rust/SeaORM/S3 execution refines the Quint transition system;
 - Postgres, object-store, filesystem, or network durability;
 - fairness or eventual successful publication;
 - safe age/lease-aware orphan garbage collection;
-- package resolution, mirror fan-out, yanking, or provenance verification; or
+- dependency-graph resolution, mirror fan-out, or provenance verification;
+- ordering correctness outside the concrete comparator behavior covered by
+  Rust tests; or
 - correctness outside the tool versions, assumptions, and bounds recorded in
-  `formal/fm.toml`.
+  the two manifests.
 
 Rust handler tests cover the matching immutability and transaction regressions.
 Later work can add an ITF adapter that drives the real in-memory HTTP/SQLite
 stack, then extend the model to reservation, target fan-out, provenance,
-resolution, mirrors, and yanking.
+dependency-graph resolution, and mirrors.
