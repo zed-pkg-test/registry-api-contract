@@ -15,7 +15,7 @@ jobs:
   render:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
@@ -25,21 +25,31 @@ jobs:
       - name: Render Hetzner overlay
         run: kubectl kustomize k8s/overlays/hetzner > /tmp/hetzner.yaml
 
-      - name: Verify RAM-backed singleton storage
+      - name: Verify RAM-backed singleton bootstrap
         shell: bash
         run: |
           set -euo pipefail
           for rendered in /tmp/aws.yaml /tmp/hetzner.yaml; do
             grep -q 'medium: Memory' "$rendered"
+            grep -q 'sizeLimit: 512Mi' "$rendered"
             grep -q 'replicas: 1' "$rendered"
             grep -q 'name: STORAGE_BACKEND' "$rendered"
             grep -q 'value: local' "$rendered"
+            grep -q 'name: ZED_AUTH_DISABLED' "$rendered"
+            grep -q 'name: ZED_RATE_LIMIT_DISABLED' "$rendered"
+            grep -q 'name: ZED_VERIFY_TAGS' "$rendered"
             grep -q 'image: ghcr.io/zed-pkg/zed-api-server:main' "$rendered"
           done
 
-      - name: Verify cloud-local registry hosts
+      - name: Prove temporary bypasses cannot be Internet-facing
         shell: bash
         run: |
           set -euo pipefail
+          for rendered in /tmp/aws.yaml /tmp/hetzner.yaml; do
+            ! grep -q '^kind: Ingress$' "$rendered"
+            ! grep -q 'cert-manager.io/cluster-issuer' "$rendered"
+            grep -q 'kind: Service' "$rendered"
+            grep -q 'type: ClusterIP' "$rendered"
+          done
           grep -q 'registry.aws.zpkg.tech' /tmp/aws.yaml
           grep -q 'registry.hetzner.zpkg.tech' /tmp/hetzner.yaml
