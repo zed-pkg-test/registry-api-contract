@@ -101,13 +101,15 @@ the compose stack (not unit-tested yet — known gap).
 
 ## Formal methods
 
-[`formal/fm.toml`](formal/fm.toml) defines a schema-v1 `fmctl` gate for the
-package-publication state machine. Its Quint model exhaustively checks the
-finite concurrent-publisher state graph for a single immutable winner, atomic
-advertisement/metadata visibility, fail-closed authorization, and committed
-artifact availability. See [`formal/README.md`](formal/README.md) for bounds,
-failure witnesses, the concurrency finding behind retained failed-upload
-blobs, and an explicit account of what is not proved.
+[`formal/fm.toml`](formal/fm.toml) and
+[`formal/latest_selection.fm.toml`](formal/latest_selection.fm.toml) define
+schema-v1 `fmctl` gates for publication finalization and deterministic
+latest-version selection across publish/yank transitions. Their Quint models
+exhaustively check immutable publication, atomic visibility, fail-closed
+authorization, committed artifact availability, and maximal non-yanked
+selection. See [`formal/README.md`](formal/README.md) for bounds, witnesses,
+the concurrency finding behind retained failed-upload blobs, and an explicit
+account of what is not proved.
 
 ## License
 

@@ -169,13 +169,11 @@ async fn summaries(
     let mut items = Vec::with_capacity(rows.len());
     for (pkg, org_row) in rows {
         let Some(org_row) = org_row else { continue };
-        let latest = version::Entity::find()
+        let versions = version::Entity::find()
             .filter(version::Column::PackageId.eq(pkg.id))
-            .filter(version::Column::Yanked.eq(false))
-            .order_by_desc(version::Column::PublishedAt)
-            .one(&state.db)
-            .await?
-            .map(|v| v.version);
+            .all(&state.db)
+            .await?;
+        let latest = super::latest_visible_version(&versions);
         items.push(PackageSummary {
             tags: super::tags_of(&pkg),
             org: org_row.slug,

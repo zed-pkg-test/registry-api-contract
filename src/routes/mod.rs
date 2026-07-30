@@ -161,6 +161,26 @@ pub(super) fn sort_versions_desc(versions: &mut [String]) {
     zed_interfaces::version::sort_desc(versions);
 }
 
+/// Return every visible version in deterministic version-identity order.
+///
+/// `published_at` is deliberately irrelevant: backfilling an older release
+/// must not make it newer than an already-published higher version. Keeping
+/// yank filtering and ordering in this one helper also prevents package,
+/// listing, and search endpoints from disagreeing about `latest`.
+pub(super) fn visible_versions_desc(rows: &[version::Model]) -> Vec<String> {
+    let mut versions: Vec<String> = rows
+        .iter()
+        .filter(|row| !row.yanked)
+        .map(|row| row.version.clone())
+        .collect();
+    sort_versions_desc(&mut versions);
+    versions
+}
+
+pub(super) fn latest_visible_version(rows: &[version::Model]) -> Option<String> {
+    visible_versions_desc(rows).into_iter().next()
+}
+
 /// Extract a package's tags (stored as a JSON array of strings) into a Vec.
 /// Tolerates a malformed/legacy value by yielding an empty list.
 pub(super) fn tags_of(pkg: &package::Model) -> Vec<String> {
@@ -212,7 +232,48 @@ mod tests {
     use crate::storage::ArtifactStore;
     use crate::verify::TagVerifier;
     use axum::http::StatusCode;
+    use chrono::{Duration, Utc};
     use tower::util::ServiceExt;
+    use uuid::Uuid;
+
+    fn version_row(identity: &str, yanked: bool, published_offset: i64) -> version::Model {
+        version::Model {
+            id: Uuid::new_v4(),
+            package_id: Uuid::nil(),
+            version: identity.to_string(),
+            sha256: "a".repeat(64),
+            size: 1,
+            format: "tar.gz".to_string(),
+            vcs_tag: format!("v{identity}"),
+            vcs_commit: None,
+            artifact_key: format!("artifacts/{identity}.tar.gz"),
+            yanked,
+            published_at: Utc::now() + Duration::seconds(published_offset),
+        }
+    }
+
+    /// DEN-731: selection is a pure function of version identity and yank
+    /// state, never publication order. Restoring the highest version makes it
+    /// visible again without changing its immutable publication timestamp.
+    #[test]
+    fn latest_visible_version_is_ordered_and_yank_safe() {
+        let mut rows = vec![
+            version_row("2.0.0", false, 0),
+            version_row("1.9.0", false, 10),
+            version_row("3.0.0", true, 5),
+        ];
+
+        assert_eq!(latest_visible_version(&rows).as_deref(), Some("2.0.0"));
+        assert_eq!(visible_versions_desc(&rows), ["2.0.0", "1.9.0"]);
+
+        rows[2].yanked = false;
+        assert_eq!(latest_visible_version(&rows).as_deref(), Some("3.0.0"));
+
+        for row in &mut rows {
+            row.yanked = true;
+        }
+        assert_eq!(latest_visible_version(&rows), None);
+    }
 
     /// Route patterns must line up with the URL helpers every client uses.
     #[test]

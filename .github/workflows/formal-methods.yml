@@ -14,8 +14,8 @@ permissions:
   contents: read
 
 jobs:
-  package-publication:
-    name: fmctl + Quint publication safety
+  registry-safety:
+    name: fmctl + Quint registry safety
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -65,37 +65,47 @@ jobs:
             --manifest-path "$RUNNER_TEMP/fmctl-source/Cargo.toml"
           echo "FMCTL=$RUNNER_TEMP/fmctl-source/target/release/fmctl" >> "$GITHUB_ENV"
 
-      - name: Validate the formal-methods manifest
+      - name: Validate both formal-methods manifests
         run: |
-          mkdir -p .formal-artifacts/fmctl
+          mkdir -p .formal-artifacts/fmctl .formal-artifacts/latest-selection
           "$FMCTL" --format json validate \
             | tee .formal-artifacts/fmctl/validate.json
+          "$FMCTL" \
+            --manifest formal/latest_selection.fm.toml \
+            --format json \
+            validate \
+            | tee .formal-artifacts/latest-selection/validate.json
 
       - name: Record and validate the formal toolchain
         run: |
           "$FMCTL" --format json doctor \
             | tee .formal-artifacts/fmctl/doctor.json
 
-      - name: Type-check the publication model
+      - name: Type-check both registry models
         run: |
           "$FMCTL" check
+          "$FMCTL" --manifest formal/latest_selection.fm.toml check
 
-      - name: Reach every configured race and failure witness
+      - name: Reach every configured registry witness
         run: |
           "$FMCTL" simulate
+          "$FMCTL" --manifest formal/latest_selection.fm.toml simulate
 
-      - name: Exhaust the finite publication state graph
+      - name: Exhaust both finite registry state graphs
         run: |
           "$FMCTL" verify
+          "$FMCTL" --manifest formal/latest_selection.fm.toml verify
 
       - name: Upload model-checker evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zed-api-publication-formal-methods
+          name: zed-api-registry-formal-methods
           path: |
             .formal-artifacts/
             formal/fm.toml
+            formal/latest_selection.fm.toml
+            formal/latest_selection.qnt
             formal/package_publication.qnt
           include-hidden-files: true
           if-no-files-found: error
