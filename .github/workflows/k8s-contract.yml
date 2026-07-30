@@ -33,6 +33,8 @@ jobs:
             grep -q 'medium: Memory' "$rendered"
             grep -q 'sizeLimit: 512Mi' "$rendered"
             grep -q 'replicas: 1' "$rendered"
+            grep -q 'strategy:' "$rendered"
+            grep -q 'type: Recreate' "$rendered"
             grep -q 'name: STORAGE_BACKEND' "$rendered"
             grep -q 'value: local' "$rendered"
             grep -q 'name: ZED_AUTH_DISABLED' "$rendered"
