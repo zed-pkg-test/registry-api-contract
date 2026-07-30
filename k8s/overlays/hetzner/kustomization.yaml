@@ -4,6 +4,9 @@ kind: Kustomization
 resources:
   - ../../base
 
+# The Hetzner bootstrap remains cluster-local while auth/rate/tag checks are
+# disabled. Public ingress is promoted separately after authentication and
+# certificate policy are enabled.
 patches:
   - target:
       group: apps
@@ -23,18 +26,3 @@ patches:
                 env:
                   - name: PUBLIC_BASE_URL
                     value: https://registry.hetzner.zpkg.tech
-  - target:
-      group: networking.k8s.io
-      version: v1
-      kind: Ingress
-      name: dd-zed-api-server
-    patch: |-
-      - op: replace
-        path: /spec/tls/0/hosts/0
-        value: registry.hetzner.zpkg.tech
-      - op: replace
-        path: /spec/tls/0/secretName
-        value: zed-api-server-hetzner-tls
-      - op: replace
-        path: /spec/rules/0/host
-        value: registry.hetzner.zpkg.tech
