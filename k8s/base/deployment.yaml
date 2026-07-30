@@ -20,6 +20,10 @@ spec:
   # Local tmpfs is process-local. Keep one replica until shared object storage
   # is enabled; multiple replicas would return intermittent artifact 404s.
   replicas: 1
+  # RollingUpdate may temporarily run two pods with unrelated RAM artifact
+  # stores. Recreate preserves a single storage owner throughout promotion.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: dd-zed-api-server
@@ -30,7 +34,8 @@ spec:
         app.kubernetes.io/name: dd-zed-api-server
         app.kubernetes.io/part-of: zed
     spec:
-      # Talks to Postgres over egress; never calls the k8s API.
+      # Talks only to namespace-local Postgres and DNS in this bootstrap profile;
+      # it never calls the Kubernetes API.
       automountServiceAccountToken: false
       imagePullSecrets:
         - name: zed-ghcr
@@ -41,13 +46,9 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: zed-api-server
-          # `main` is a MUTABLE tag. With IfNotPresent a node that already
-          # cached some older `main` never re-pulls, so replicas can silently
-          # serve different builds and a rollout is not reproducible. `Always`
-          # makes every pod start converge on the current `main`.
-          # The real fix is pinning by digest in the GitOps overlay
-          # (zed-infra/k8s/manifests/zed-api-server/overlays/prod) so the
-          # deployed revision is declared, reviewable, and rollback-able.
+          # `main` is a compatibility placeholder for source rendering. The
+          # deployment controller resolves the reviewed commit tag to a digest
+          # and replaces this value before applying anything to a cluster.
           image: ghcr.io/zed-pkg/zed-api-server:main
           imagePullPolicy: Always
           ports:
@@ -58,8 +59,8 @@ spec:
             - { name: PUBLIC_BASE_URL, value: "https://registry.zpkg.tech" }
             - { name: STORAGE_BACKEND, value: "local" }
             - { name: STORAGE_LOCAL_DIR, value: "/var/lib/zed/artifacts" }
-            # TEMPORARY bootstrap posture. Remove both flags before opening
-            # registry mutation routes to untrusted callers.
+            # TEMPORARY bootstrap posture. Restore all three controls before
+            # adding any public API route.
             - { name: ZED_AUTH_DISABLED, value: "1" }
             - { name: ZED_RATE_LIMIT_DISABLED, value: "1" }
             - { name: ZED_VERIFY_TAGS, value: "off" }
@@ -71,7 +72,6 @@ spec:
             # ingress policy limited to Zed pods. Restore the ExternalSecret
             # before switching to durable production metadata.
             - { name: DATABASE_URL, value: "postgres://zed@zed-postgres.zed.svc.cluster.local:5432/zed" }
-          # A DB/R2 blip should take the pod out of the Service, not restart it.
           readinessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 3
@@ -92,8 +92,6 @@ spec:
             - { name: artifacts, mountPath: /var/lib/zed/artifacts }
           lifecycle:
             preStop:
-              # Let endpoint removal propagate before shutdown so in-flight
-              # publishes are not cut off.
               exec: { command: ["sleep", "5"] }
       volumes:
         - name: tmp
