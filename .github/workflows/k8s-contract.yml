@@ -33,6 +33,8 @@ jobs:
             grep -q 'medium: Memory' "$rendered"
             grep -q 'sizeLimit: 512Mi' "$rendered"
             grep -q 'replicas: 1' "$rendered"
+            grep -q 'strategy:' "$rendered"
+            grep -q 'type: Recreate' "$rendered"
             grep -q 'name: STORAGE_BACKEND' "$rendered"
             grep -q 'value: local' "$rendered"
             grep -q 'name: ZED_AUTH_DISABLED' "$rendered"
@@ -41,13 +43,20 @@ jobs:
             grep -q 'image: ghcr.io/zed-pkg/zed-api-server:main' "$rendered"
           done
 
-      - name: Prove temporary bypasses cannot be Internet-facing
+      - name: Prove temporary bypasses are cluster-local
         shell: bash
         run: |
           set -euo pipefail
           for rendered in /tmp/aws.yaml /tmp/hetzner.yaml; do
             ! grep -q '^kind: Ingress$' "$rendered"
             ! grep -q 'cert-manager.io/cluster-issuer' "$rendered"
+            ! grep -q 'kubernetes.io/metadata.name: ingress-nginx' "$rendered"
+            ! grep -q 'cidr: 0.0.0.0/0' "$rendered"
+            ! grep -q 'port: 443' "$rendered"
+            ! grep -q 'port: 6543' "$rendered"
+            grep -q 'kubernetes.io/metadata.name: observability' "$rendered"
+            grep -q 'app.kubernetes.io/part-of: zed' "$rendered"
+            grep -q 'app: zed-postgres' "$rendered"
             grep -q 'kind: Service' "$rendered"
             grep -q 'type: ClusterIP' "$rendered"
           done
