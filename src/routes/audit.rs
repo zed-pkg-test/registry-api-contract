@@ -61,6 +61,14 @@ pub async fn get_audit_log(
             actor_token_name: r.actor_token_name,
             actor_role: r.actor_role,
             detail: r.detail,
+            // This build has no chain columns yet, so it reports itself as the
+            // pre-chain server the contract describes: seq 0 and an empty
+            // entry_hash, both skipped on the wire. A client must therefore
+            // treat these as "not offered", never as a verified chain — the
+            // hash columns and their population land with the chain migration.
+            seq: 0,
+            entry_hash: String::new(),
+            prev_hash: None,
         })
         .collect();
     Ok(Json(AuditLogResponse {
