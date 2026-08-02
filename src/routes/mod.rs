@@ -36,6 +36,7 @@ pub const ROUTE_SEMANTIC: &str = "/v1/search/semantic";
 pub const ROUTE_EMBEDDING: &str = "/v1/packages/{org}/{name}/embedding";
 pub const ROUTE_ORGS: &str = "/v1/orgs";
 pub const ROUTE_AUDIT: &str = "/v1/orgs/{org}/audit";
+pub const ROUTE_AUDIT_VERIFY: &str = "/v1/orgs/{org}/audit/verify";
 pub const ROUTE_FILES: &str = "/v1/files/{org}/{name}/{version}/{*path}";
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -98,6 +99,7 @@ pub fn router(state: Arc<AppState>, max_artifact_bytes: usize) -> Router {
         .route(ROUTE_SEMANTIC, post(semantic::semantic_search))
         .route(ROUTE_ORGS, post(orgs::claim_org))
         .route(ROUTE_AUDIT, get(audit::get_audit_log))
+        .route(ROUTE_AUDIT_VERIFY, get(audit::verify_audit_log))
         .merge(artifact_routes)
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
         .merge(publish_route)
@@ -300,6 +302,7 @@ mod tests {
         assert_eq!(fill(ROUTE_EMBEDDING), r::embedding_path("acme", "http-kit"));
         assert_eq!(ROUTE_ORGS, r::orgs_path());
         assert_eq!(fill(ROUTE_AUDIT), r::audit_path("acme"));
+        assert_eq!(fill(ROUTE_AUDIT_VERIFY), r::audit_verify_path("acme"));
         assert_eq!(
             fill(ROUTE_FILES),
             r::file_path("acme", "http-kit", "1.2.0", "dist/style.css")

@@ -2294,7 +2294,11 @@ dependencies = [
 name = "migration"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "sea-orm",
  "sea-orm-migration",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

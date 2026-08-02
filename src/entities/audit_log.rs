@@ -21,6 +21,17 @@ pub struct Model {
     /// `owner` | `publisher` | `reader`, or `admin` for unscoped tokens.
     pub actor_role: String,
     pub detail: Option<String>,
+    /// Position in this org's append-only chain, starting at 1. Rows written
+    /// before the chain existed carry 0 and are reported as unchained rather
+    /// than treated as a broken chain.
+    #[sea_orm(default_value = 0)]
+    pub seq: i64,
+    /// `sha256(audit_chain_preimage(..))`, lowercase hex. Empty for pre-chain
+    /// rows.
+    #[sea_orm(default_value = "")]
+    pub entry_hash: String,
+    /// The previous entry's `entry_hash`; `None` for the first entry.
+    pub prev_hash: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -7,6 +7,7 @@ mod m20260724_000004_token_role;
 mod m20260724_000005_token_lifecycle;
 mod m20260725_000006_audit_log;
 mod m20260726_000007_embeddings_and_tags;
+pub mod m20260726_000008_audit_chain;
 
 pub struct Migrator;
 
@@ -21,6 +22,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260724_000005_token_lifecycle::Migration),
             Box::new(m20260725_000006_audit_log::Migration),
             Box::new(m20260726_000007_embeddings_and_tags::Migration),
+            Box::new(m20260726_000008_audit_chain::Migration),
         ]
     }
 }
