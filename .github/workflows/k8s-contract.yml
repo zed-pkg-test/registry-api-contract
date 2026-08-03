@@ -25,18 +25,21 @@ jobs:
       - name: Render Hetzner overlay
         run: kubectl kustomize k8s/overlays/hetzner > /tmp/hetzner.yaml
 
-      - name: Verify RAM-backed singleton bootstrap
+      - name: Verify bounded process-memory singleton bootstrap
         shell: bash
         run: |
           set -euo pipefail
           for rendered in /tmp/aws.yaml /tmp/hetzner.yaml; do
-            grep -q 'medium: Memory' "$rendered"
-            grep -q 'sizeLimit: 512Mi' "$rendered"
             grep -q 'replicas: 1' "$rendered"
             grep -q 'strategy:' "$rendered"
             grep -q 'type: Recreate' "$rendered"
             grep -q 'name: STORAGE_BACKEND' "$rendered"
-            grep -q 'value: local' "$rendered"
+            grep -q 'value: memory' "$rendered"
+            grep -q 'name: STORAGE_MEMORY_MAX_BYTES' "$rendered"
+            grep -Eq 'value: "?268435456"?' "$rendered"
+            ! grep -q 'name: STORAGE_LOCAL_DIR' "$rendered"
+            ! grep -q 'mountPath: /var/lib/zed/artifacts' "$rendered"
+            ! grep -q 'medium: Memory' "$rendered"
             grep -q 'name: ZED_AUTH_DISABLED' "$rendered"
             grep -q 'name: ZED_RATE_LIMIT_DISABLED' "$rendered"
             grep -q 'name: ZED_VERIFY_TAGS' "$rendered"
