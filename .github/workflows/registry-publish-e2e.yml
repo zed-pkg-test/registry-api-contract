@@ -27,6 +27,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   ZED_CLI_SHA: 8929a58c6591c7a964d7f91412665d7c8a4afdf3
+  ZED_PKG_REGISTRY: http://127.0.0.1:8080
+  ZED_PKG_TOKEN: ci-admin-token
+  ZED_PKG_ALLOW_NO_MANIFEST: "1"
+  ZED_PKG_INSTALL_MODE: copy
 
 jobs:
   publish-install-roundtrip:
@@ -61,8 +65,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked
-          cargo install \
+          cargo build --quiet --locked
+          cargo install --quiet \
             --git https://github.com/zed-pkg/zed-cli.git \
             --rev "$ZED_CLI_SHA" \
             --locked \
@@ -95,20 +99,15 @@ jobs:
           done
           cat "$RUNNER_TEMP/zed-api.log"
           exit 1
-      - name: Claim publish install and verify an immutable package
+      - name: Prepare a tagged package and manifestless consumer
         shell: bash
-        env:
-          PATH: ${{ runner.temp }}/zed-cli/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-          ZED_PKG_REGISTRY: http://127.0.0.1:8080
-          ZED_PKG_TOKEN: ci-admin-token
-          ZED_PKG_HOME: ${{ runner.temp }}/zed-home
-          ZED_PKG_ALLOW_NO_MANIFEST: "1"
-          ZED_PKG_INSTALL_MODE: copy
         run: |
           set -euo pipefail
           package_dir="$RUNNER_TEMP/package"
           consumer_dir="$RUNNER_TEMP/consumer"
-          mkdir -p "$package_dir" "$consumer_dir"
+          mkdir -p "$package_dir" "$consumer_dir" "$RUNNER_TEMP/zed-home"
+          printf 'PACKAGE_DIR=%s\nCONSUMER_DIR=%s\nZED_PKG_HOME=%s\n' \
+            "$package_dir" "$consumer_dir" "$RUNNER_TEMP/zed-home" >>"$GITHUB_ENV"
           cat >"$package_dir/.zpkg.toml" <<'TOML'
           [package]
           org = "e2e"
@@ -134,33 +133,62 @@ jobs:
           git -C "$package_dir" add .
           git -C "$package_dir" commit -qm "test fixture"
           git -C "$package_dir" tag v0.1.0
-
-          zed org claim e2e
-          (cd "$package_dir" && zed publish)
-
-          cd "$consumer_dir"
-          zed install e2e/registry-smoke@0.1.0 --skip-manifest
+      - name: Claim the organization through the public CLI contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/zed-cli/bin/zed" org claim e2e
+      - name: Publish the tagged artifact through the multipart HTTP endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PACKAGE_DIR"
+          "$RUNNER_TEMP/zed-cli/bin/zed" publish
+      - name: Install and verify the package in a manifestless consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CONSUMER_DIR"
+          "$RUNNER_TEMP/zed-cli/bin/zed" install e2e/registry-smoke@0.1.0 --skip-manifest
           find zed_modules -type f -name hello.txt -print -quit | grep -q .
           grep -R "hello from the real registry" zed_modules >/dev/null
-          zed uninstall
-          zed install --frozen --skip-manifest
+      - name: Restore the exact artifact from the frozen lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CONSUMER_DIR"
+          "$RUNNER_TEMP/zed-cli/bin/zed" uninstall
+          "$RUNNER_TEMP/zed-cli/bin/zed" install --frozen --skip-manifest
           grep -R "hello from the real registry" zed_modules >/dev/null
-
+      - name: Verify canonical package metadata from the server
+        shell: bash
+        run: |
+          set -euo pipefail
           curl -fsS \
             http://127.0.0.1:8080/v1/packages/e2e/registry-smoke/versions/0.1.0 \
             | jq -e '.manifest.package.org == "e2e" and .manifest.package.name == "registry-smoke" and .manifest.package.version == "0.1.0"' \
             >/dev/null
-
+      - name: Reject duplicate publication of an immutable version
+        shell: bash
+        run: |
+          set -euo pipefail
           set +e
-          duplicate_output=$(cd "$package_dir" && zed publish 2>&1)
+          duplicate_output=$(cd "$PACKAGE_DIR" && "$RUNNER_TEMP/zed-cli/bin/zed" publish 2>&1)
           duplicate_status=$?
           set -e
+          printf '%s\n' "$duplicate_output"
           test "$duplicate_status" -ne 0
           printf '%s\n' "$duplicate_output" | grep -Eiq 'version_exists|already exists|immutable'
-      - name: Print registry diagnostics on failure
+      - name: Print registry and filesystem diagnostics on failure
         if: failure()
         shell: bash
-        run: cat "$RUNNER_TEMP/zed-api.log" || true
+        run: |
+          printf '%s\n' '--- registry log ---'
+          cat "$RUNNER_TEMP/zed-api.log" || true
+          printf '%s\n' '--- package tree ---'
+          find "${PACKAGE_DIR:-$RUNNER_TEMP/package}" -maxdepth 3 -type f -print 2>/dev/null || true
+          printf '%s\n' '--- consumer tree ---'
+          find "${CONSUMER_DIR:-$RUNNER_TEMP/consumer}" -maxdepth 5 -type f -print 2>/dev/null || true
       - name: Stop the registry
         if: always()
         shell: bash
