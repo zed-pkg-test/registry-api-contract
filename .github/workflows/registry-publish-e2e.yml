@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 45
     services:
       postgres:
-        image: postgres:17
+        image: pgvector/pgvector:0.8.2-pg17-bookworm
         env:
           POSTGRES_USER: zed
           POSTGRES_PASSWORD: zed
@@ -68,7 +68,7 @@ jobs:
             --locked \
             --root "$RUNNER_TEMP/zed-cli"
           "$RUNNER_TEMP/zed-cli/bin/zed" --help >/dev/null
-      - name: Start the real Rust registry against Postgres
+      - name: Start the real Rust registry against Postgres with pgvector
         shell: bash
         env:
           DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
