@@ -47,12 +47,14 @@ jobs:
           PY
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
-          components: clippy,rustfmt
+          components: rustfmt
       - name: Install mold (fast linker)
         uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
         with:
           make-default: true
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: tests
       - name: Install cargo-nextest
         uses: taiki-e/install-action@a6e08638ce5ee7b285b1e051c006e3be64fcff91 # nextest
       - name: Resolve only the committed lockfile
@@ -63,5 +65,27 @@ jobs:
         run: cargo nextest run --workspace --locked
       - name: Doctests
         run: cargo test --workspace --doc --locked
-      - name: Deny warnings
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: clippy
+      - name: Install mold (fast linker)
+        uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
+        with:
+          make-default: true
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: clippy
+      - name: Deny every Rust warning from the committed lockfile
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --quiet --workspace --all-targets --locked -- -D warnings 2>&1 \
+            | tee "$RUNNER_TEMP/clippy.log"
