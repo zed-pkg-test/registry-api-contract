@@ -75,6 +75,31 @@ pub async fn list_packages(
     Ok(Json(PackageListResponse { items, total }))
 }
 
+/// Build package summaries (with tags and latest non-yanked version) for a page.
+async fn summaries(
+    state: &AppState,
+    rows: Vec<(package::Model, Option<org::Model>)>,
+) -> ApiResult<Vec<PackageSummary>> {
+    use sea_orm::{ColumnTrait, QueryFilter};
+    let mut items = Vec::with_capacity(rows.len());
+    for (pkg, org_row) in rows {
+        let Some(org_row) = org_row else { continue };
+        let versions = version::Entity::find()
+            .filter(version::Column::PackageId.eq(pkg.id))
+            .all(&state.db)
+            .await?;
+        let latest = super::latest_visible_version(&versions);
+        items.push(PackageSummary {
+            tags: super::tags_of(&pkg),
+            org: org_row.slug,
+            name: pkg.name,
+            description: pkg.description,
+            latest,
+        });
+    }
+    Ok(items)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{search::has_all_tags, tags_of};
@@ -158,29 +183,4 @@ mod tests {
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].name, "cli-tool");
     }
-}
-
-/// Build package summaries (with tags and latest non-yanked version) for a page.
-async fn summaries(
-    state: &AppState,
-    rows: Vec<(package::Model, Option<org::Model>)>,
-) -> ApiResult<Vec<PackageSummary>> {
-    use sea_orm::{ColumnTrait, QueryFilter};
-    let mut items = Vec::with_capacity(rows.len());
-    for (pkg, org_row) in rows {
-        let Some(org_row) = org_row else { continue };
-        let versions = version::Entity::find()
-            .filter(version::Column::PackageId.eq(pkg.id))
-            .all(&state.db)
-            .await?;
-        let latest = super::latest_visible_version(&versions);
-        items.push(PackageSummary {
-            tags: super::tags_of(&pkg),
-            org: org_row.slug,
-            name: pkg.name,
-            description: pkg.description,
-            latest,
-        });
-    }
-    Ok(items)
 }
