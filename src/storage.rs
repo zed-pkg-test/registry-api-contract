@@ -262,12 +262,20 @@ mod tests {
             .await
             .unwrap();
         store
-            .put("artifacts/one", Bytes::from_static(b"1234"), "application/octet-stream")
+            .put(
+                "artifacts/one",
+                Bytes::from_static(b"1234"),
+                "application/octet-stream",
+            )
             .await
             .unwrap();
 
         let error = store
-            .put("artifacts/two", Bytes::from_static(b"5"), "application/octet-stream")
+            .put(
+                "artifacts/two",
+                Bytes::from_static(b"5"),
+                "application/octet-stream",
+            )
             .await
             .unwrap_err();
         assert!(error.to_string().contains("capacity exceeded"));
