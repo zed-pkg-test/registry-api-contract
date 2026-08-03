@@ -164,10 +164,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsS \
-            http://127.0.0.1:8080/v1/packages/e2e/registry-smoke/versions/0.1.0 \
-            | jq -e '.manifest.package.org == "e2e" and .manifest.package.name == "registry-smoke" and .manifest.package.version == "0.1.0"' \
-            >/dev/null
+          metadata=$(curl -fsS \
+            http://127.0.0.1:8080/v1/packages/e2e/registry-smoke/versions/0.1.0)
+          printf '%s\n' "$metadata" | jq .
+          printf '%s\n' "$metadata" \
+            | jq -e '
+                .org == "e2e"
+                and .name == "registry-smoke"
+                and .version == "0.1.0"
+                and .format == "tar.gz"
+                and (.sha256 | test("^[0-9a-f]{64}$"))
+                and (.download_url | endswith("/v1/artifacts/" + .sha256))
+                and .yanked == false
+              ' >/dev/null
       - name: Reject duplicate publication of an immutable version
         shell: bash
         run: |
