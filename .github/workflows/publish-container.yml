@@ -35,7 +35,9 @@ concurrency:
 env:
   # The image tag names the API commit. Pin the sibling path dependency too so
   # that tag always identifies the complete source graph used by the build.
-  ZED_INTERFACES_SHA: 07d01604461d00e237c7d86ad3855464167574ec
+  # Keep this synchronized with the Rust CI pin; source-graph drift previously
+  # made the debug test build pass while the release container could not compile.
+  ZED_INTERFACES_SHA: f141e4cfae31a74c679b46d1d4bb0146b20555f6
 
 jobs:
   image:
@@ -79,6 +81,7 @@ jobs:
           set -euo pipefail
           test "$(git -C zed-api-server.rs rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C zed-interfaces rev-parse HEAD)" = "$ZED_INTERFACES_SHA"
+          test "$(sed -n 's/^  ZED_INTERFACES_SHA: //p' zed-api-server.rs/.github/workflows/ci.yml)" = "$ZED_INTERFACES_SHA"
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
@@ -115,7 +118,7 @@ jobs:
           test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
           test "$(docker image inspect "$image" --format '{{ index .Config.Labels "io.zpkg.interfaces.revision" }}')" = "$ZED_INTERFACES_SHA"
 
-      - name: Start the API image against Postgres and local storage
+      - name: Start the API image against Postgres and bounded process memory
         shell: bash
         run: |
           set -euo pipefail
@@ -123,15 +126,15 @@ jobs:
             -e BIND_ADDR=127.0.0.1:48080 \
             -e DATABASE_URL=postgres://zed@127.0.0.1:5432/zed \
             -e AUTO_MIGRATE=true \
-            -e STORAGE_BACKEND=local \
-            -e STORAGE_LOCAL_DIR=/tmp/zed-artifacts \
+            -e STORAGE_BACKEND=memory \
+            -e STORAGE_MEMORY_MAX_BYTES=268435456 \
             -e PUBLIC_BASE_URL=http://127.0.0.1:48080 \
             -e ZED_AUTH_DISABLED=1 \
             -e ZED_RATE_LIMIT_DISABLED=1 \
             -e ZED_VERIFY_TAGS=off \
             "ghcr.io/zed-pkg/zed-api-server:${GITHUB_SHA}"
 
-      - name: Wait for migrations, RAM-backed storage, and health
+      - name: Wait for migrations, process-memory storage, and health
         shell: bash
         run: |
           set -euo pipefail
@@ -141,7 +144,12 @@ jobs:
               exit 1
             fi
             if curl -fsS http://127.0.0.1:48080/healthz; then
-              exit 0
+              docker inspect zed-api-smoke --format '{{range .Config.Env}}{{println .}}{{end}}' \
+                | grep -qx 'STORAGE_BACKEND=memory'
+              docker inspect zed-api-smoke --format '{{range .Config.Env}}{{println .}}{{end}}' \
+                | grep -qx 'STORAGE_MEMORY_MAX_BYTES=268435456'
+              return_code=0
+              exit "$return_code"
             fi
             sleep 2
           done
@@ -159,7 +167,7 @@ jobs:
           docker image inspect "ghcr.io/zed-pkg/zed-api-server:${GITHUB_SHA}" \
             > smoke-diagnostics/image-inspect.json 2>&1
           docker ps -a > smoke-diagnostics/docker-ps.txt 2>&1
-          printf 'api_revision=%s\ninterfaces_revision=%s\n' \
+          printf 'api_revision=%s\ninterfaces_revision=%s\nstorage_backend=memory\n' \
             "$GITHUB_SHA" "$ZED_INTERFACES_SHA" \
             > smoke-diagnostics/source-revisions.txt
           sed -n '1,240p' smoke-diagnostics/container.log
