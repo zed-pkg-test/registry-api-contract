@@ -1,6 +1,6 @@
 # dd-zed-api-server — temporary bootstrap profile: Postgres metadata and
-# artifact tarballs/zip files on pod-local tmpfs. This intentionally avoids
-# R2/S3 while package fan-out is exercised end to end.
+# artifact tarballs/zip files in bounded Rust process memory. This intentionally
+# avoids R2/S3 while package fan-out is exercised end to end.
 #
 # Layer-2 (app-owned) manifest: namespace-scoped ONLY. The `zed` Namespace, its
 # ResourceQuota/LimitRange and the default-deny NetworkPolicy are Layer-1, owned by
@@ -17,11 +17,13 @@ metadata:
     app.kubernetes.io/name: dd-zed-api-server
     app.kubernetes.io/part-of: zed
 spec:
-  # Local tmpfs is process-local. Keep one replica until shared object storage
-  # is enabled; multiple replicas would return intermittent artifact 404s.
+  # Process memory is replica-local. Keep one replica until shared object
+  # storage is enabled; multiple replicas would return intermittent artifact
+  # 404s.
   replicas: 1
-  # RollingUpdate may temporarily run two pods with unrelated RAM artifact
-  # stores. Recreate preserves a single storage owner throughout promotion.
+  # RollingUpdate may temporarily run two pods with unrelated in-process
+  # artifact stores. Recreate preserves a single storage owner throughout
+  # bootstrap promotion.
   strategy:
     type: Recreate
   selector:
@@ -57,8 +59,11 @@ spec:
           env:
             - { name: BIND_ADDR, value: "0.0.0.0:8080" }
             - { name: PUBLIC_BASE_URL, value: "https://registry.zpkg.tech" }
-            - { name: STORAGE_BACKEND, value: "local" }
-            - { name: STORAGE_LOCAL_DIR, value: "/var/lib/zed/artifacts" }
+            - { name: STORAGE_BACKEND, value: "memory" }
+            # Keep artifact bytes below half the pod's 512 MiB limit so Tokio,
+            # multipart parsing, metadata, and archive extraction retain
+            # explicit headroom. The server rejects writes over this total.
+            - { name: STORAGE_MEMORY_MAX_BYTES, value: "268435456" }
             # TEMPORARY bootstrap posture. Restore all three controls before
             # adding any public API route.
             - { name: ZED_AUTH_DISABLED, value: "1" }
@@ -89,14 +94,9 @@ spec:
             capabilities: { drop: ["ALL"] }
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
-            - { name: artifacts, mountPath: /var/lib/zed/artifacts }
           lifecycle:
             preStop:
               exec: { command: ["sleep", "5"] }
       volumes:
         - name: tmp
           emptyDir: {}
-        - name: artifacts
-          emptyDir:
-            medium: Memory
-            sizeLimit: 512Mi
