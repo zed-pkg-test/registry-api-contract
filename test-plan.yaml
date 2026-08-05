@@ -1,0 +1,50 @@
+schema_version: 1
+managed_by: github-test-org-factory/1.0.0
+production_org: zed-pkg
+test_org: zed-pkg-test
+repository: registry-api-contract
+kind: api
+readiness: ready
+objectives:
+- Verify publish, resolve, download, checksum, provenance, immutable tags, and organization boundaries across the supported
+  happy-path states and canonical fixtures.
+- Verify publish, resolve, download, checksum, provenance, immutable tags, and organization boundaries under retries,
+  interruption, concurrency, offline operation, or partial failure.
+- Verify publish, resolve, download, checksum, provenance, immutable tags, and organization boundaries preserves authorization,
+  idempotency, integrity, observability, and actionable failure classification.
+always_on_checks:
+- Validate test-plan and dependency metadata.
+- Validate generated fixture and workflow syntax.
+- Classify missing upstreams or credentials separately from product regressions.
+schedule_utc: 23 4 * * 2,5
+expensive: false
+required_infrastructure:
+- registry service
+cases:
+- id: TC-001
+  title: Verify publish, resolve, download, checksum, provenance, immutable tags, and organization boundaries across
+    the supported happy-path states and canonical fixtures.
+  tier: contract-live
+  status: planned
+  evidence:
+  - junit
+  - readiness JSON
+  - workflow artifacts
+- id: TC-002
+  title: Verify publish, resolve, download, checksum, provenance, immutable tags, and organization boundaries under retries,
+    interruption, concurrency, offline operation, or partial failure.
+  tier: contract-live
+  status: planned
+  evidence:
+  - junit
+  - readiness JSON
+  - workflow artifacts
+- id: TC-003
+  title: Verify publish, resolve, download, checksum, provenance, immutable tags, and organization boundaries preserves
+    authorization, idempotency, integrity, observability, and actionable failure classification.
+  tier: contract-live
+  status: planned
+  evidence:
+  - junit
+  - readiness JSON
+  - workflow artifacts
