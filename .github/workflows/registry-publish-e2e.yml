@@ -183,6 +183,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The first publish creates local pack output. Remove only that generated
+          # output so the second attempt exercises registry immutability rather than
+          # the CLI's unrelated dirty-worktree preflight.
+          rm -rf "$PACKAGE_DIR/.zed"
+          test -z "$(git -C "$PACKAGE_DIR" status --porcelain)"
           set +e
           duplicate_output=$(cd "$PACKAGE_DIR" && "$RUNNER_TEMP/zed-cli/bin/zed" publish 2>&1)
           duplicate_status=$?
