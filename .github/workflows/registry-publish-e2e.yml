@@ -169,13 +169,15 @@ jobs:
           printf '%s\n' "$metadata" | jq .
           printf '%s\n' "$metadata" \
             | jq -e '
-                .org == "e2e"
-                and .name == "registry-smoke"
-                and .version == "0.1.0"
-                and .format == "tar.gz"
-                and (.sha256 | test("^[0-9a-f]{64}$"))
-                and (.download_url | endswith("/v1/artifacts/" + .sha256))
-                and .yanked == false
+                . as $metadata
+                | $metadata.org == "e2e"
+                and $metadata.name == "registry-smoke"
+                and $metadata.version == "0.1.0"
+                and $metadata.format == "tar.gz"
+                and ($metadata.sha256 | test("^[0-9a-f]{64}$"))
+                and ($metadata.download_url
+                  | endswith("/v1/artifacts/" + $metadata.sha256))
+                and $metadata.yanked == false
               ' >/dev/null
       - name: Reject duplicate publication of an immutable version
         shell: bash
