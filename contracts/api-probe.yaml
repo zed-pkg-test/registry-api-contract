@@ -1,0 +1,9 @@
+base_url_env: TARGET_API_URL
+health_paths_env: API_HEALTH_PATHS
+default_health_paths:
+- /healthz
+- /readyz
+openapi_candidates:
+- /openapi.json
+- /api/docs.json
+- /docs/openapi.json
