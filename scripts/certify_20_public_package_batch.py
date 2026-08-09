@@ -13,6 +13,7 @@ and the acceptance plane still runs only zed-api-server.rs plus zed-cli.
 
 from __future__ import annotations
 
+import os
 import sys
 
 import certify_20_package_batch as certification
@@ -80,7 +81,29 @@ def clone_roots_with_pinned_submodules() -> list[certification.RootPackage]:
     return roots
 
 
+def current_cli_environment(
+    extra: dict[str, str] | None = None,
+) -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("ZED_PKG_ALLOW_NO_MANIFEST", None)
+    env.update(
+        {
+            "NO_COLOR": "1",
+            "CLICOLOR": "0",
+            "ZED_PKG_REGISTRY": certification.REGISTRY,
+            "ZED_PKG_TOKEN": certification.TOKEN,
+            "ZED_PKG_INSTALL_MODE": "copy",
+            "ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST": "1",
+            "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH": "1",
+        }
+    )
+    if extra:
+        env.update(extra)
+    return env
+
+
 certification.clone_roots = clone_roots_with_pinned_submodules
+certification.scrubbed_environment = current_cli_environment
 
 
 if __name__ == "__main__":
