@@ -266,8 +266,8 @@ jobs:
           identical_status=$?
           set -e
           printf '%s\n' "$identical_output"
-          test "$identical_status" -ne 0
-          printf '%s\n' "$identical_output" | grep -Eiq 'version_exists|already exists|immutable|published'
+          test "$identical_status" -eq 0
+          printf '%s\n' "$identical_output" | grep -Eiq 'already published .* identical sha256; skipping'
           test "$(psql "$DATABASE_URL" -Atc "select count(*) from zed_package_versions v join zed_packages p on p.id=v.package_id join zed_orgs o on o.id=p.org_id where o.slug='zed-e2e' and p.name='zed-lib-core' and v.version='0.1.0'")" = 1
           test "$(psql "$DATABASE_URL" -Atc "select count(*) from zed_package_uploads u join zed_package_versions v on v.id=u.package_version_id join zed_packages p on p.id=v.package_id where p.name='zed-lib-core' and u.status='verified'")" = 1
           object_count=$(aws --endpoint-url "$S3_ENDPOINT_URL" s3api list-objects-v2 --bucket "$S3_BUCKET" | jq '(.Contents // []) | length')
