@@ -1,0 +1,200 @@
+name: Full registry Postgres and S3 E2E
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-registry-s3-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  API_REF: feat/shared-auth-account-registry-api
+  ZED_CLI_SHA: 8929a58c6591c7a964d7f91412665d7c8a4afdf3
+  DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
+  AWS_ACCESS_KEY_ID: minio
+  AWS_SECRET_ACCESS_KEY: minio-registry-e2e
+  AWS_REGION: us-east-1
+  AWS_EC2_METADATA_DISABLED: "true"
+  S3_BUCKET: zed-registry-e2e
+  S3_ENDPOINT_URL: http://127.0.0.1:9000
+  S3_REGION: us-east-1
+  S3_FORCE_PATH_STYLE: "true"
+  STORAGE_BACKEND: s3
+  PUBLIC_BASE_URL: http://127.0.0.1:8080
+  BIND_ADDR: 127.0.0.1:8080
+  ZED_VERIFY_TAGS: "off"
+  ZED_AUTH_DISABLED: "1"
+  ZED_RATE_LIMIT_DISABLED: "1"
+  AUTO_MIGRATE: "false"
+  ZED_PKG_REGISTRY: http://127.0.0.1:8080
+  ZED_PKG_ALLOW_NO_MANIFEST: "1"
+  ZED_PKG_INSTALL_MODE: copy
+
+jobs:
+  twelve-package-roundtrip:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg17-bookworm
+        env:
+          POSTGRES_USER: zed
+          POSTGRES_PASSWORD: zed
+          POSTGRES_DB: zed
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zed -d zed"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Check out the independent harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Check out the registry candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-api-server.rs
+          ref: ${{ env.API_REF }}
+          path: upstream/zed-api-server
+          persist-credentials: false
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+      - name: Build the exact registry and reviewed CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path upstream/zed-api-server/Cargo.toml --locked
+          cargo install --quiet --git https://github.com/zed-pkg/zed-cli.git \
+            --rev "$ZED_CLI_SHA" --locked --root "$RUNNER_TEMP/zed-cli"
+          echo "$RUNNER_TEMP/zed-cli/bin" >>"$GITHUB_PATH"
+      - name: Start an S3-compatible object store and create the bucket
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name zed-minio --network host \
+            -e MINIO_ROOT_USER="$AWS_ACCESS_KEY_ID" \
+            -e MINIO_ROOT_PASSWORD="$AWS_SECRET_ACCESS_KEY" \
+            quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z server /data --address :9000
+          for _ in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null && break
+            sleep 1
+          done
+          aws --endpoint-url "$S3_ENDPOINT_URL" s3api create-bucket --bucket "$S3_BUCKET"
+      - name: Apply migrations, mint a scoped token, and start the registry
+        working-directory: upstream/zed-api-server
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./target/debug/zed-api-server migrate
+          output=$(./target/debug/zed-api-server create-token --name zed-pkg-test-s3 --expires-in-days 1)
+          token=$(printf '%s\n' "$output" | tail -n 1)
+          case "$token" in zpkg_*) ;; *) printf '%s\n' "$output" >&2; exit 1;; esac
+          echo "::add-mask::$token"
+          printf 'ZED_PKG_TOKEN=%s\n' "$token" >>"$GITHUB_ENV"
+          ./target/debug/zed-api-server >"$RUNNER_TEMP/registry.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/registry.pid"
+          for _ in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8080/healthz | jq -e '.ok and .db' >/dev/null && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/registry.log"
+          exit 1
+      - name: Claim one organization and publish twelve independent Zed packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          zed org claim zed-e2e
+          packages=(zed-lib-core zed-interfaces zed-lock zed-sync zed-clients zed-cli zed-api-server zed-web-server zed-infra zed-e2e zed-monorepo zed-vscode)
+          mkdir -p "$RUNNER_TEMP/packages" "$RUNNER_TEMP/consumer" "$RUNNER_TEMP/zed-home"
+          echo "ZED_PKG_HOME=$RUNNER_TEMP/zed-home" >>"$GITHUB_ENV"
+          for name in "${packages[@]}"; do
+            dir="$RUNNER_TEMP/packages/$name"
+            mkdir -p "$dir"
+            cat >"$dir/.zpkg.toml" <<TOML
+          [package]
+          org = "zed-e2e"
+          name = "$name"
+          version = "0.1.0"
+          description = "Independent twelve-package registry fixture for $name"
+          license = "MIT"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg-test/registry-api-contract"
+
+          [publish]
+          include_readme = true
+          tag_format = "v{version}"
+          TOML
+            printf '%s\n' "$name over Postgres and S3" >"$dir/payload.txt"
+            printf '# %s\n' "$name" >"$dir/README.md"
+            git -C "$dir" init -q
+            git -C "$dir" config user.name "Zed Registry E2E"
+            git -C "$dir" config user.email "zed-registry-e2e@example.invalid"
+            git -C "$dir" add .
+            git -C "$dir" commit -qm "fixture $name"
+            git -C "$dir" tag v0.1.0
+            (cd "$dir" && zed publish)
+            curl -fsS "http://127.0.0.1:8080/api/v1/registry/packages/zed-e2e/$name/versions/0.1.0" \
+              | jq -e --arg n "$name" '.org == "zed-e2e" and .name == $n and .version == "0.1.0" and (.sha256 | test("^[0-9a-f]{64}$"))' >/dev/null
+          done
+      - name: Install every package and restore one from a frozen lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(zed-lib-core zed-interfaces zed-lock zed-sync zed-clients zed-cli zed-api-server zed-web-server zed-infra zed-e2e zed-monorepo zed-vscode)
+          cd "$RUNNER_TEMP/consumer"
+          for name in "${packages[@]}"; do
+            zed install "zed-e2e/$name@0.1.0" --skip-manifest
+          done
+          for name in "${packages[@]}"; do
+            grep -R "$name over Postgres and S3" zed_modules >/dev/null
+          done
+          zed uninstall
+          zed install --frozen --skip-manifest
+          grep -R "zed-lib-core over Postgres and S3" zed_modules >/dev/null
+      - name: Verify database compatibility and package-scoped object keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(psql "$DATABASE_URL" -Atc "select name from org where slug='zed-e2e'")" = zed-e2e
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from package p join org o on o.id=p.org_id where o.slug='zed-e2e'")" = 12
+          objects=$(aws --endpoint-url "$S3_ENDPOINT_URL" s3api list-objects-v2 --bucket "$S3_BUCKET")
+          printf '%s\n' "$objects" | jq -e '.KeyCount == 12' >/dev/null
+          printf '%s\n' "$objects" | jq -e '[.Contents[].Key | test("^zed/v1/packages/zed-e2e/[^/]+/0\\.1\\.0/[0-9a-f]{64}\\.(tar\\.gz|zip)$")] | all' >/dev/null
+      - name: Prove immutable version rejection
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/packages/zed-lib-core"
+          printf 'mutated\n' >"$dir/payload.txt"
+          git -C "$dir" add payload.txt
+          git -C "$dir" commit -qm mutate
+          git -C "$dir" tag -f v0.1.0 >/dev/null
+          set +e
+          output=$(cd "$dir" && zed publish 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          printf '%s\n' "$output" | grep -Eiq 'version_exists|already exists|immutable'
+      - name: Diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          cat "$RUNNER_TEMP/registry.log" 2>/dev/null || true
+          docker logs zed-minio 2>/dev/null || true
+          aws --endpoint-url "$S3_ENDPOINT_URL" s3api list-objects-v2 --bucket "$S3_BUCKET" 2>/dev/null || true
+      - name: Stop services
+        if: always()
+        shell: bash
+        run: |
+          test ! -f "$RUNNER_TEMP/registry.pid" || kill "$(cat "$RUNNER_TEMP/registry.pid")" 2>/dev/null || true
+          docker rm -f zed-minio 2>/dev/null || true
