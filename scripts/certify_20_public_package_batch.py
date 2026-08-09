@@ -14,6 +14,7 @@ and the acceptance plane still runs only zed-api-server.rs plus zed-cli.
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 
 import certify_20_package_batch as certification
@@ -40,6 +41,15 @@ certification.REPOSITORIES = (
     "opto-sync/syncer.c",
     "opto-sync/syncer.rs",
 )
+
+# Manifestless consumers must not live below the checked-out controller repo:
+# zed intentionally walks ancestors for .zpkg.toml, and the controller itself
+# is a package. Keep disposable consumers and stores under RUNNER_TEMP so the
+# install operand exercises the true no-manifest path instead of inheriting the
+# repository's package manifest.
+_runner_temp = pathlib.Path(certification.required_env("RUNNER_TEMP")).resolve()
+certification.CONSUMERS = _runner_temp / "zed-20-public-consumers"
+certification.HOMES = _runner_temp / "zed-20-public-homes"
 
 _original_clone_roots = certification.clone_roots
 
