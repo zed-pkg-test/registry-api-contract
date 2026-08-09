@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  API_REF: feat/shared-auth-account-registry-api
+  API_SHA: 80d5f1b99e3ffecdac8b8aff32ad8b184fdba0d6
   ZED_CLI_SHA: 8929a58c6591c7a964d7f91412665d7c8a4afdf3
   DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
   AWS_ACCESS_KEY_ID: minio
@@ -30,6 +30,7 @@ env:
   ZED_AUTH_DISABLED: "1"
   ZED_RATE_LIMIT_DISABLED: "1"
   AUTO_MIGRATE: "false"
+  DB_CONNECT_MAX_WAIT_SECS: "60"
   ZED_PKG_REGISTRY: http://127.0.0.1:8080
   ZED_PKG_ALLOW_NO_MANIFEST: "1"
   ZED_PKG_INSTALL_MODE: copy
@@ -57,15 +58,26 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Check out the registry candidate
+
+      - name: Check out the exact registry candidate
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: zed-pkg/zed-api-server.rs
-          ref: ${{ env.API_REF }}
+          ref: ${{ env.API_SHA }}
           path: upstream/zed-api-server
           persist-credentials: false
+
+      - name: Verify immutable source pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C upstream/zed-api-server rev-parse HEAD)" = "$API_SHA"
+          test "$API_SHA" = "80d5f1b99e3ffecdac8b8aff32ad8b184fdba0d6"
+          test "$ZED_CLI_SHA" = "8929a58c6591c7a964d7f91412665d7c8a4afdf3"
+
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+
       - name: Build the exact registry and reviewed CLI
         shell: bash
         run: |
@@ -74,6 +86,7 @@ jobs:
           cargo install --quiet --git https://github.com/zed-pkg/zed-cli.git \
             --rev "$ZED_CLI_SHA" --locked --root "$RUNNER_TEMP/zed-cli"
           echo "$RUNNER_TEMP/zed-cli/bin" >>"$GITHUB_PATH"
+
       - name: Start an S3-compatible object store and create the bucket
         shell: bash
         run: |
@@ -86,13 +99,16 @@ jobs:
             curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null && break
             sleep 1
           done
+          curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null
           aws --endpoint-url "$S3_ENDPOINT_URL" s3api create-bucket --bucket "$S3_BUCKET"
+
       - name: Apply migrations, mint a scoped token, and start the registry
         working-directory: upstream/zed-api-server
         shell: bash
         run: |
           set -euo pipefail
           ./target/debug/zed-api-server migrate
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from zed_schema_migrations where version like 'registry@%'")" = 1
           output=$(./target/debug/zed-api-server create-token --name zed-pkg-test-s3 --expires-in-days 1)
           token=$(printf '%s\n' "$output" | tail -n 1)
           case "$token" in zpkg_*) ;; *) printf '%s\n' "$output" >&2; exit 1;; esac
@@ -106,14 +122,18 @@ jobs:
           done
           cat "$RUNNER_TEMP/registry.log"
           exit 1
+
       - name: Claim one organization and publish twelve independent Zed packages
         shell: bash
         run: |
           set -euo pipefail
           zed org claim zed-e2e
           packages=(zed-lib-core zed-interfaces zed-lock zed-sync zed-clients zed-cli zed-api-server zed-web-server zed-infra zed-e2e zed-monorepo zed-vscode)
-          mkdir -p "$RUNNER_TEMP/packages" "$RUNNER_TEMP/consumer" "$RUNNER_TEMP/zed-home"
+          mkdir -p "$RUNNER_TEMP/packages" "$RUNNER_TEMP/consumer" "$RUNNER_TEMP/zed-home" "$RUNNER_TEMP/downloads"
+          : >"$RUNNER_TEMP/published.tsv"
           echo "ZED_PKG_HOME=$RUNNER_TEMP/zed-home" >>"$GITHUB_ENV"
+          export ZED_PKG_HOME="$RUNNER_TEMP/zed-home"
+
           for name in "${packages[@]}"; do
             dir="$RUNNER_TEMP/packages/$name"
             mkdir -p "$dir"
@@ -141,15 +161,36 @@ jobs:
             git -C "$dir" add .
             git -C "$dir" commit -qm "fixture $name"
             git -C "$dir" tag v0.1.0
+
             (cd "$dir" && zed publish)
-            curl -fsS "http://127.0.0.1:8080/api/v1/registry/packages/zed-e2e/$name/versions/0.1.0" \
-              | jq -e --arg n "$name" '.org == "zed-e2e" and .name == $n and .version == "0.1.0" and (.sha256 | test("^[0-9a-f]{64}$"))' >/dev/null
+
+            metadata=$(curl -fsS "http://127.0.0.1:8080/v1/packages/zed-e2e/$name/versions/0.1.0")
+            printf '%s\n' "$metadata" |
+              jq -e --arg n "$name" '
+                .org == "zed-e2e"
+                and .name == $n
+                and .version == "0.1.0"
+                and .format == "tar.gz"
+                and (.sha256 | test("^[0-9a-f]{64}$"))
+                and (.download_url | test("/v1/artifacts/[0-9a-f]{64}$"))
+              ' >/dev/null
+            sha=$(printf '%s\n' "$metadata" | jq -r '.sha256')
+            download_url=$(printf '%s\n' "$metadata" | jq -r '.download_url')
+            curl -fsSL "$download_url" -o "$RUNNER_TEMP/downloads/$name.tar.gz"
+            test "$(sha256sum "$RUNNER_TEMP/downloads/$name.tar.gz" | awk '{print $1}')" = "$sha"
+            curl -fsS "http://127.0.0.1:8080/v1/files/zed-e2e/$name/0.1.0/payload.txt" |
+              grep -Fx "$name over Postgres and S3" >/dev/null
+            printf '%s\t%s\t%s\n' "$name" "$sha" "$download_url" >>"$RUNNER_TEMP/published.tsv"
           done
-      - name: Install every package and restore one from a frozen lock
+
+          test "$(wc -l <"$RUNNER_TEMP/published.tsv")" = 12
+
+      - name: Install every package and restore one frozen dependency graph
         shell: bash
         run: |
           set -euo pipefail
           packages=(zed-lib-core zed-interfaces zed-lock zed-sync zed-clients zed-cli zed-api-server zed-web-server zed-infra zed-e2e zed-monorepo zed-vscode)
+          export ZED_PKG_HOME="$RUNNER_TEMP/zed-home"
           cd "$RUNNER_TEMP/consumer"
           for name in "${packages[@]}"; do
             zed install "zed-e2e/$name@0.1.0" --skip-manifest
@@ -157,34 +198,191 @@ jobs:
           for name in "${packages[@]}"; do
             grep -R "$name over Postgres and S3" zed_modules >/dev/null
           done
+          test -f .zpkg.lock
+          cp .zpkg.lock "$RUNNER_TEMP/frozen.lock"
           zed uninstall
+          test ! -d zed_modules || test -z "$(find zed_modules -mindepth 1 -maxdepth 1 -print -quit)"
           zed install --frozen --skip-manifest
+          cmp .zpkg.lock "$RUNNER_TEMP/frozen.lock"
           grep -R "zed-lib-core over Postgres and S3" zed_modules >/dev/null
-      - name: Verify database compatibility and package-scoped object keys
+
+      - name: Verify legacy and canonical data-plane parity
         shell: bash
         run: |
           set -euo pipefail
           test "$(psql "$DATABASE_URL" -Atc "select name from org where slug='zed-e2e'")" = zed-e2e
           test "$(psql "$DATABASE_URL" -Atc "select count(*) from package p join org o on o.id=p.org_id where o.slug='zed-e2e'")" = 12
+
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from zed_orgs where slug='zed-e2e' and name='zed-e2e' and is_soft_deleted=false")" = 1
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from zed_packages p join zed_orgs o on o.id=p.org_id where o.slug='zed-e2e' and p.visibility='public' and p.version_count=1 and p.latest_version='0.1.0' and p.is_soft_deleted=false")" = 12
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from zed_package_versions v join zed_packages p on p.id=v.package_id join zed_orgs o on o.id=p.org_id where o.slug='zed-e2e' and v.version='0.1.0' and v.yanked=false")" = 12
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from zed_package_uploads u join zed_package_versions v on v.id=u.package_version_id join zed_packages p on p.id=v.package_id join zed_orgs o on o.id=p.org_id where o.slug='zed-e2e' and u.status='verified' and u.storage_backend='r2' and u.storage_key=v.artifact_key and u.sha256=v.sha256")" = 12
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from zed_audit_log where action='package.publish.mirror'")" = 12
+
+          parity=$(psql "$DATABASE_URL" -Atc "
+            select count(*)
+            from zed_package_versions zv
+            join zed_packages zp on zp.id=zv.package_id
+            join zed_orgs zo on zo.id=zp.org_id
+            join org lo on lo.slug=zo.slug
+            join package lp on lp.org_id=lo.id and lp.name=zp.name
+            join version lv on lv.package_id=lp.id and lv.version=zv.version
+            where zo.slug='zed-e2e'
+              and zv.sha256=lv.sha256
+              and zv.artifact_key=lv.artifact_key
+          ")
+          test "$parity" = 12
+
+      - name: Verify content-addressed object keys and hashes
+        shell: bash
+        run: |
+          set -euo pipefail
           objects=$(aws --endpoint-url "$S3_ENDPOINT_URL" s3api list-objects-v2 --bucket "$S3_BUCKET")
           printf '%s\n' "$objects" | jq -e '.KeyCount == 12' >/dev/null
-          printf '%s\n' "$objects" | jq -e '[.Contents[].Key | test("^zed/v1/packages/zed-e2e/[^/]+/0\\.1\\.0/[0-9a-f]{64}\\.(tar\\.gz|zip)$")] | all' >/dev/null
-      - name: Prove immutable version rejection
+          printf '%s\n' "$objects" |
+            jq -e '[.Contents[].Key | test("^artifacts/[0-9a-f]{64}\\.(tar\\.gz|zip)$")] | all' >/dev/null
+
+          while IFS=$'\t' read -r _name sha _url; do
+            printf '%s\n' "$objects" |
+              jq -e --arg key "artifacts/$sha.tar.gz" '.Contents | any(.Key == $key)' >/dev/null
+            test "$(psql "$DATABASE_URL" -Atc "select count(*) from zed_package_versions where sha256='$sha' and artifact_key='artifacts/$sha.tar.gz'")" = 1
+          done <"$RUNNER_TEMP/published.tsv"
+
+      - name: Prove identical retry safety and divergent immutability
         shell: bash
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/packages/zed-lib-core"
+
+          set +e
+          identical_output=$(cd "$dir" && zed publish 2>&1)
+          identical_status=$?
+          set -e
+          printf '%s\n' "$identical_output"
+          test "$identical_status" -ne 0
+          printf '%s\n' "$identical_output" | grep -Eiq 'version_exists|already exists|immutable|published'
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from zed_package_versions v join zed_packages p on p.id=v.package_id join zed_orgs o on o.id=p.org_id where o.slug='zed-e2e' and p.name='zed-lib-core' and v.version='0.1.0'")" = 1
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from zed_package_uploads u join zed_package_versions v on v.id=u.package_version_id join zed_packages p on p.id=v.package_id where p.name='zed-lib-core' and u.status='verified'")" = 1
+          test "$(aws --endpoint-url "$S3_ENDPOINT_URL" s3api list-objects-v2 --bucket "$S3_BUCKET" --query 'KeyCount' --output text)" = 12
+
           printf 'mutated\n' >"$dir/payload.txt"
           git -C "$dir" add payload.txt
           git -C "$dir" commit -qm mutate
           git -C "$dir" tag -f v0.1.0 >/dev/null
           set +e
-          output=$(cd "$dir" && zed publish 2>&1)
-          status=$?
+          divergent_output=$(cd "$dir" && zed publish 2>&1)
+          divergent_status=$?
           set -e
-          printf '%s\n' "$output"
-          test "$status" -ne 0
-          printf '%s\n' "$output" | grep -Eiq 'version_exists|already exists|immutable'
+          printf '%s\n' "$divergent_output"
+          test "$divergent_status" -ne 0
+          printf '%s\n' "$divergent_output" | grep -Eiq 'version_exists|already exists|immutable'
+          test "$(aws --endpoint-url "$S3_ENDPOINT_URL" s3api list-objects-v2 --bucket "$S3_BUCKET" --query 'KeyCount' --output text)" = 12
+
+      - name: Prove exact 10-day and 50-download visibility boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(psql "$DATABASE_URL" -Atc 'select zed_public_conversion_max_age_days()')" = 10
+          test "$(psql "$DATABASE_URL" -Atc 'select zed_public_conversion_max_downloads()')" = 50
+
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          do $$
+          declare
+            organization_id uuid;
+            allowed_id uuid;
+            old_id uuid;
+            popular_id uuid;
+          begin
+            select id into strict organization_id
+            from zed_orgs
+            where slug = 'zed-e2e' and is_soft_deleted = false;
+
+            insert into zed_packages (
+              org_id, name, visibility, download_count, created_at
+            ) values (
+              organization_id, 'boundary-exact', 'private', 50, now() - interval '10 days'
+            ) returning id into allowed_id;
+
+            update zed_packages
+            set visibility = 'public'
+            where id = allowed_id;
+
+            if (select visibility from zed_packages where id = allowed_id) <> 'public' then
+              raise exception 'exact 10-day / 50-download boundary was not promoted';
+            end if;
+
+            insert into zed_packages (
+              org_id, name, visibility, download_count, created_at
+            ) values (
+              organization_id, 'boundary-too-old', 'private', 0,
+              now() - interval '10 days' - interval '1 microsecond'
+            ) returning id into old_id;
+
+            begin
+              update zed_packages set visibility = 'public' where id = old_id;
+              raise exception 'expected ZD001 for package older than ten days';
+            exception when sqlstate 'ZD001' then
+              null;
+            end;
+
+            insert into zed_packages (
+              org_id, name, visibility, download_count, created_at
+            ) values (
+              organization_id, 'boundary-too-popular', 'private', 51, now()
+            ) returning id into popular_id;
+
+            begin
+              update zed_packages set visibility = 'public' where id = popular_id;
+              raise exception 'expected ZD002 for package over fifty downloads';
+            exception when sqlstate 'ZD002' then
+              null;
+            end;
+
+            delete from zed_packages
+            where id in (allowed_id, old_id, popular_id);
+          end
+          $$;
+          SQL
+
+      - name: Emit the certified package manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -Rn \
+            --arg api_sha "$API_SHA" \
+            --arg cli_sha "$ZED_CLI_SHA" \
+            --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '
+              [inputs | split("\t") | {
+                name: .[0],
+                version: "0.1.0",
+                sha256: .[1],
+                download_url: .[2],
+                storage_key: ("artifacts/" + .[1] + ".tar.gz")
+              }] |
+              {
+                environment: "disposable-postgres-minio",
+                api_sha: $api_sha,
+                cli_sha: $cli_sha,
+                generated_at: $generated_at,
+                package_count: length,
+                packages: .
+              }
+            ' <"$RUNNER_TEMP/published.tsv" >"$RUNNER_TEMP/package-manifest.json"
+          jq -e '.package_count == 12 and (.packages | length == 12)' "$RUNNER_TEMP/package-manifest.json"
+
+      - name: Upload certification evidence
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: registry-postgres-s3-evidence
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/package-manifest.json
+            ${{ runner.temp }}/published.tsv
+            ${{ runner.temp }}/registry.log
+          retention-days: 14
+
       - name: Diagnostics
         if: failure()
         shell: bash
@@ -192,6 +390,8 @@ jobs:
           cat "$RUNNER_TEMP/registry.log" 2>/dev/null || true
           docker logs zed-minio 2>/dev/null || true
           aws --endpoint-url "$S3_ENDPOINT_URL" s3api list-objects-v2 --bucket "$S3_BUCKET" 2>/dev/null || true
+          psql "$DATABASE_URL" -c '\dt zed_*' 2>/dev/null || true
+
       - name: Stop services
         if: always()
         shell: bash
