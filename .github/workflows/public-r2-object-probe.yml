@@ -1,0 +1,116 @@
+name: public registry R2 object probe
+
+on:
+  push:
+    branches:
+      - agent/den-2788-20-package-batch
+    paths:
+      - .github/workflows/public-r2-object-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: https://registry.zpkg.net
+  PACKAGE_ORG: oresoftware
+  PACKAGE_NAME: flags-2-env
+  PACKAGE_VERSION: 0.2.0
+
+jobs:
+  probe:
+    name: verify live metadata, redirect, and artifact checksum
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Fetch metadata and verify the live object path
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence-r2
+          metadata="$REGISTRY/v1/packages/$PACKAGE_ORG/$PACKAGE_NAME/versions/$PACKAGE_VERSION"
+          curl --fail --silent --show-error --location \
+            --connect-timeout 5 --max-time 30 \
+            --dump-header evidence-r2/metadata.headers \
+            "$metadata" \
+            -o evidence-r2/metadata.json
+
+          jq -e \
+            --arg org "$PACKAGE_ORG" \
+            --arg name "$PACKAGE_NAME" \
+            --arg version "$PACKAGE_VERSION" \
+            '.org == $org and .name == $name and .version == $version
+             and (.sha256 | test("^[0-9a-f]{64}$"))
+             and (.download_url | type == "string" and length > 0)' \
+            evidence-r2/metadata.json >/dev/null
+
+          expected_sha="$(jq -r .sha256 evidence-r2/metadata.json)"
+          download_url="$(jq -r .download_url evidence-r2/metadata.json)"
+          case "$download_url" in
+            http://*|https://*) ;;
+            *) download_url="$REGISTRY/${download_url#/}" ;;
+          esac
+
+          result="$(
+            curl --fail --silent --show-error --location \
+              --connect-timeout 5 --max-time 120 \
+              --dump-header evidence-r2/download.headers \
+              --output evidence-r2/artifact \
+              --write-out '%{http_code}\t%{url_effective}\t%{size_download}' \
+              "$download_url"
+          )"
+          IFS=$'\t' read -r status final_url size_download <<< "$result"
+          actual_sha="$(sha256sum evidence-r2/artifact | awk '{print $1}')"
+          test "$status" = "200"
+          test "$actual_sha" = "$expected_sha"
+          test "$size_download" -gt 0
+          case "$final_url" in
+            http://127.0.0.1:*|http://localhost:*|https://127.0.0.1:*|https://localhost:*)
+              echo "live artifact unexpectedly resolved to local storage: $final_url" >&2
+              exit 1
+              ;;
+          esac
+
+          final_host="$(python3 - "$final_url" <<'PY'
+          import sys
+          import urllib.parse
+          print(urllib.parse.urlparse(sys.argv[1]).hostname or "")
+          PY
+          )"
+          test -n "$final_host"
+
+          jq -n \
+            --arg registry "$REGISTRY" \
+            --arg package "$PACKAGE_ORG/$PACKAGE_NAME@$PACKAGE_VERSION" \
+            --arg metadata_url "$metadata" \
+            --arg download_url "$download_url" \
+            --arg final_url "$final_url" \
+            --arg final_host "$final_host" \
+            --arg expected_sha256 "$expected_sha" \
+            --arg actual_sha256 "$actual_sha" \
+            --argjson size_download "$size_download" \
+            '{
+              registry: $registry,
+              package: $package,
+              metadata_url: $metadata_url,
+              download_url: $download_url,
+              final_url: $final_url,
+              final_host: $final_host,
+              expected_sha256: $expected_sha256,
+              actual_sha256: $actual_sha256,
+              size_download: $size_download,
+              checksum_verified: ($expected_sha256 == $actual_sha256),
+              non_local_object_backend: true
+            }' \
+            > evidence-r2/public-r2-object-probe.json
+
+          jq . evidence-r2/public-r2-object-probe.json
+
+      - name: Upload live object evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: public-r2-object-probe
+          path: evidence-r2/
+          if-no-files-found: error
+          retention-days: 30
