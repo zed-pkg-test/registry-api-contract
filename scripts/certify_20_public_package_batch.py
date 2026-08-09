@@ -115,6 +115,7 @@ def current_cli_environment(
 certification.clone_roots = clone_roots_with_pinned_submodules
 certification.scrubbed_environment = current_cli_environment
 
+# This annotation intentionally triggers the canonical clean-head recertification.
 
 if __name__ == "__main__":
     try:
