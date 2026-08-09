@@ -1,0 +1,227 @@
+name: 20-public-package registry acceptance
+
+on:
+  push:
+    branches:
+      - agent/den-2788-20-package-batch
+    paths:
+      - .github/workflows/zed-20-public-package-batch.yml
+      - scripts/certify_20_package_batch.py
+      - scripts/certify_20_public_package_batch.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zed-20-public-package-batch-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  ZED_API_SHA: 949b0872cf715b85ffc7e80a2a9e9cb9eb99efcf
+  ZED_CLI_SHA: 751358fe130e64b646844bc7d857c4cff215ca2d
+  ZED_PKG_REGISTRY: http://127.0.0.1:18080
+
+jobs:
+  certify:
+    name: certify 20 public dependency-complete roots
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.5-pg16
+        env:
+          POSTGRES_USER: zed
+          POSTGRES_PASSWORD: zed
+          POSTGRES_DB: zed
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zed -d zed"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
+    steps:
+      - name: Check out the registry contract controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Check out the exact registry API
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-api-server.rs
+          ref: ${{ env.ZED_API_SHA }}
+          path: upstream/zed-api-server
+          persist-credentials: false
+
+      - name: Check out the exact Zed CLI
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ env.ZED_CLI_SHA }}
+          path: upstream/zed-cli
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      - name: Cache exact-head Rust builds
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: |
+            upstream/zed-api-server -> target
+            upstream/zed-cli -> target
+
+      - name: Build exact API and CLI heads
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --quiet --locked \
+            --manifest-path upstream/zed-api-server/Cargo.toml
+          cargo build --quiet --locked --release --bin zed \
+            --manifest-path upstream/zed-cli/Cargo.toml
+          test "$(git -C upstream/zed-api-server rev-parse HEAD)" = "$ZED_API_SHA"
+          test "$(git -C upstream/zed-cli rev-parse HEAD)" = "$ZED_CLI_SHA"
+          {
+            echo "ZED=$GITHUB_WORKSPACE/upstream/zed-cli/target/release/zed"
+            echo "ZED_API=$GITHUB_WORKSPACE/upstream/zed-api-server/target/debug/zed-api-server"
+          } >> "$GITHUB_ENV"
+
+      - name: Start S3-compatible object storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach --rm \
+            --name zed-public-batch-minio \
+            --publish 19000:9000 \
+            --env MINIO_ROOT_USER=zedminio \
+            --env MINIO_ROOT_PASSWORD=zedminio-secret \
+            quay.io/minio/minio:latest \
+            server /data
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:19000/minio/health/live >/dev/null; then
+              break
+            fi
+            if (( attempt == 60 )); then
+              docker logs zed-public-batch-minio
+              exit 1
+            fi
+            sleep 1
+          done
+          docker run --rm --network host \
+            --entrypoint /bin/sh \
+            quay.io/minio/mc:latest -ceu '
+              mc alias set zed-local http://127.0.0.1:19000 zedminio zedminio-secret
+              mc mb --ignore-existing zed-local/zed-pkg-artifacts
+            '
+
+      - name: Start zed-api-server.rs on Postgres and S3
+        shell: bash
+        env:
+          DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
+          AUTO_MIGRATE: "true"
+          BIND_ADDR: 127.0.0.1:18080
+          PUBLIC_BASE_URL: http://127.0.0.1:18080
+          STORAGE_BACKEND: s3
+          S3_BUCKET: zed-pkg-artifacts
+          S3_ENDPOINT_URL: http://127.0.0.1:19000
+          S3_REGION: us-east-1
+          S3_FORCE_PATH_STYLE: "true"
+          AWS_ACCESS_KEY_ID: zedminio
+          AWS_SECRET_ACCESS_KEY: zedminio-secret
+          ZED_VERIFY_TAGS: "off"
+          DB_CONNECT_MAX_WAIT_SECS: "45"
+          RUST_LOG: info
+        run: |
+          set -euo pipefail
+          "$ZED_API" >"$RUNNER_TEMP/zed-api-public-batch.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/zed-api-public-batch.pid"
+          for attempt in $(seq 1 90); do
+            if curl -fsS "$ZED_PKG_REGISTRY/healthz" >/dev/null; then
+              exit 0
+            fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/zed-api-public-batch.pid")" 2>/dev/null; then
+              cat "$RUNNER_TEMP/zed-api-public-batch.log" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/zed-api-public-batch.log" >&2
+          exit 1
+
+      - name: Mint an isolated one-day package publisher token
+        shell: bash
+        env:
+          DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
+          PUBLIC_BASE_URL: http://127.0.0.1:18080
+          STORAGE_BACKEND: s3
+          S3_BUCKET: zed-pkg-artifacts
+          S3_ENDPOINT_URL: http://127.0.0.1:19000
+          S3_REGION: us-east-1
+          S3_FORCE_PATH_STYLE: "true"
+          AWS_ACCESS_KEY_ID: zedminio
+          AWS_SECRET_ACCESS_KEY: zedminio-secret
+          ZED_VERIFY_TAGS: "off"
+        run: |
+          set -euo pipefail
+          output="$(
+            "$ZED_API" create-token \
+              --name zed-20-public-package-batch \
+              --expires-in-days 1
+          )"
+          token="$(printf '%s\n' "$output" | tail -n 1)"
+          case "$token" in
+            zpkg_*) ;;
+            *)
+              printf '%s\n' "$output" >&2
+              exit 1
+              ;;
+          esac
+          echo "::add-mask::$token"
+          printf 'ZED_PKG_TOKEN=%s\n' "$token" >> "$GITHUB_ENV"
+
+      - name: Certify the public dependency-complete 20-package batch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/certify_20_package_batch.py \
+            scripts/certify_20_public_package_batch.py
+          python3 scripts/certify_20_public_package_batch.py
+
+      - name: Collect bounded failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p evidence-v2
+          cp "$RUNNER_TEMP/zed-api-public-batch.log" \
+            evidence-v2/zed-api.log 2>/dev/null || true
+          docker logs zed-public-batch-minio >evidence-v2/minio.log 2>&1 || true
+          find sources-v2 -maxdepth 2 -name .zpkg.toml -print \
+            >evidence-v2/discovered-manifests.txt 2>&1 || true
+          find consumers-v2 -maxdepth 5 -type f -print \
+            >evidence-v2/consumer-files.txt 2>&1 || true
+
+      - name: Upload immutable certification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: zed-20-public-package-certification
+          path: evidence-v2/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Stop API and object storage
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$RUNNER_TEMP/zed-api-public-batch.pid"; then
+            kill "$(cat "$RUNNER_TEMP/zed-api-public-batch.pid")" 2>/dev/null || true
+          fi
+          docker rm -f zed-public-batch-minio >/dev/null 2>&1 || true
