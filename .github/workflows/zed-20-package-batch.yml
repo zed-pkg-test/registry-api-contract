@@ -1,0 +1,583 @@
+name: 20-package registry acceptance
+
+on:
+  push:
+    branches:
+      - agent/den-2788-20-package-batch
+    paths:
+      - .github/workflows/zed-20-package-batch.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zed-20-package-batch-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  ZED_API_SHA: 949b0872cf715b85ffc7e80a2a9e9cb9eb99efcf
+  ZED_CLI_SHA: 751358fe130e64b646844bc7d857c4cff215ca2d
+  ZED_PKG_REGISTRY: http://127.0.0.1:18080
+  ZED_PKG_INSTALL_MODE: copy
+  ZED_PKG_ALLOW_NO_MANIFEST: "1"
+  ZED_PKG_HOME: ${{ github.workspace }}/.zed-home
+
+jobs:
+  publish-install-20:
+    name: publish, install, uninstall, frozen-reinstall 20 packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.5-pg16
+        env:
+          POSTGRES_USER: zed
+          POSTGRES_PASSWORD: zed
+          POSTGRES_DB: zed
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zed -d zed"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
+    steps:
+      - name: Check out contract controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Check out exact registry API
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-api-server.rs
+          ref: ${{ env.ZED_API_SHA }}
+          path: upstream/zed-api-server
+          persist-credentials: false
+
+      - name: Check out exact Zed CLI
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ env.ZED_CLI_SHA }}
+          path: upstream/zed-cli
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      - name: Cache locked Rust builds
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: |
+            upstream/zed-api-server -> target
+            upstream/zed-cli -> target
+
+      - name: Build exact API and CLI heads
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          cargo build --quiet --locked --manifest-path upstream/zed-api-server/Cargo.toml
+          cargo build --quiet --locked --release --bin zed --manifest-path upstream/zed-cli/Cargo.toml
+          test "$(git -C upstream/zed-api-server rev-parse HEAD)" = "$ZED_API_SHA"
+          test "$(git -C upstream/zed-cli rev-parse HEAD)" = "$ZED_CLI_SHA"
+          echo "ZED=$GITHUB_WORKSPACE/upstream/zed-cli/target/release/zed" >> "$GITHUB_ENV"
+          echo "ZED_API=$GITHUB_WORKSPACE/upstream/zed-api-server/target/debug/zed-api-server" >> "$GITHUB_ENV"
+
+      - name: Probe existing public API names without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          : > evidence/public-api-probe.tsv
+          for base in \
+            https://registry.zpkg.net \
+            https://api.zpkg.net \
+            https://app.zpkg.net; do
+            status="$(curl --silent --show-error --location \
+              --connect-timeout 5 --max-time 15 \
+              --output /tmp/public-health \
+              --write-out '%{http_code}' \
+              "$base/healthz" || true)"
+            printf '%s\t%s\n' "$base" "${status:-000}" \
+              | tee -a evidence/public-api-probe.tsv
+          done
+
+      - name: Start S3-compatible object storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach --rm \
+            --name zed-minio \
+            --publish 19000:9000 \
+            --env MINIO_ROOT_USER=zedminio \
+            --env MINIO_ROOT_PASSWORD=zedminio-secret \
+            quay.io/minio/minio:latest \
+            server /data
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:19000/minio/health/live >/dev/null; then
+              break
+            fi
+            if (( attempt == 60 )); then
+              docker logs zed-minio
+              exit 1
+            fi
+            sleep 1
+          done
+          docker run --rm --network host \
+            --entrypoint /bin/sh \
+            quay.io/minio/mc:latest -ceu '
+              mc alias set zed-local http://127.0.0.1:19000 zedminio zedminio-secret
+              mc mb --ignore-existing zed-local/zed-pkg-artifacts
+            '
+
+      - name: Start the real Rust registry on Postgres and S3
+        shell: bash
+        env:
+          DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
+          AUTO_MIGRATE: "true"
+          BIND_ADDR: 127.0.0.1:18080
+          PUBLIC_BASE_URL: http://127.0.0.1:18080
+          STORAGE_BACKEND: s3
+          S3_BUCKET: zed-pkg-artifacts
+          S3_ENDPOINT_URL: http://127.0.0.1:19000
+          S3_REGION: us-east-1
+          S3_FORCE_PATH_STYLE: "true"
+          AWS_ACCESS_KEY_ID: zedminio
+          AWS_SECRET_ACCESS_KEY: zedminio-secret
+          ZED_VERIFY_TAGS: "off"
+          ZED_AUTH_DISABLED: "1"
+          ZED_RATE_LIMIT_DISABLED: "1"
+          DB_CONNECT_MAX_WAIT_SECS: "45"
+          RUST_LOG: info
+        run: |
+          set -euo pipefail
+          "$ZED_API" >"$RUNNER_TEMP/zed-api.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/zed-api.pid"
+          for attempt in $(seq 1 90); do
+            if curl -fsS "$ZED_PKG_REGISTRY/healthz" >/dev/null; then
+              exit 0
+            fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/zed-api.pid")" 2>/dev/null; then
+              cat "$RUNNER_TEMP/zed-api.log" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/zed-api.log" >&2
+          exit 1
+
+      - name: Mint a short-lived registry token
+        shell: bash
+        env:
+          DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
+          PUBLIC_BASE_URL: http://127.0.0.1:18080
+          STORAGE_BACKEND: s3
+          S3_BUCKET: zed-pkg-artifacts
+          S3_ENDPOINT_URL: http://127.0.0.1:19000
+          S3_REGION: us-east-1
+          S3_FORCE_PATH_STYLE: "true"
+          AWS_ACCESS_KEY_ID: zedminio
+          AWS_SECRET_ACCESS_KEY: zedminio-secret
+          ZED_VERIFY_TAGS: "off"
+        run: |
+          set -euo pipefail
+          output="$("$ZED_API" create-token \
+            --name zed-20-package-batch \
+            --expires-in-days 1)"
+          token="$(printf '%s\n' "$output" | tail -n 1)"
+          case "$token" in
+            zpkg_*) ;;
+            *) printf '%s\n' "$output" >&2; exit 1 ;;
+          esac
+          echo "::add-mask::$token"
+          printf 'ZED_PKG_TOKEN=%s\n' "$token" >> "$GITHUB_ENV"
+
+      - name: Clone and pin the 20 repository batch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p sources evidence "$ZED_PKG_HOME"
+          cat >"$RUNNER_TEMP/repos.txt" <<'REPOS'
+          zed-pkg/zed-interfaces
+          zed-pkg/zed-lib-core
+          zed-pkg/zed-lib
+          zed-pkg/zed-orm-core
+          zed-pkg/zed-cli
+          zed-pkg/zed-api-server.rs
+          zed-pkg/zed-clients
+          zed-pkg/zed-sync
+          zed-pkg/zed-lock
+          zed-pkg/zed-docs
+          zed-pkg/zed-e2e
+          zed-pkg/zed-infra
+          zed-pkg/zed-monorepo
+          zed-pkg/zed-vscode
+          zed-pkg/zed-intellij
+          zed-pkg/zed-sublimetext
+          zed-pkg/zed-eclipse
+          zed-pkg/zed-xcode
+          zed-pkg/zed-qtcreator
+          zed-pkg/zed-visual-studio
+          REPOS
+
+          : > evidence/sources.ndjson
+          while IFS= read -r repo; do
+            test -n "$repo"
+            slug="${repo//\//__}"
+            git clone --quiet --depth 1 "https://github.com/${repo}.git" "sources/$slug"
+            sha="$(git -C "sources/$slug" rev-parse HEAD)"
+            default_branch="$(git -C "sources/$slug" symbolic-ref --short HEAD)"
+            printf '{"repository":"%s","sha":"%s","branch":"%s"}\n' \
+              "$repo" "$sha" "$default_branch" >> evidence/sources.ndjson
+          done <"$RUNNER_TEMP/repos.txt"
+          test "$(wc -l < evidence/sources.ndjson)" -eq 20
+
+      - name: Validate manifests and create package ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import tomllib
+
+          root = pathlib.Path("sources")
+          source_rows = [
+              json.loads(line)
+              for line in pathlib.Path("evidence/sources.ndjson").read_text().splitlines()
+              if line.strip()
+          ]
+          packages = []
+          missing = []
+          coordinates = set()
+          versions = set()
+          for source in source_rows:
+              repo = source["repository"]
+              path = root / repo.replace("/", "__")
+              manifest_path = path / ".zpkg.toml"
+              if not manifest_path.is_file():
+                  missing.append(repo)
+                  continue
+              manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+              package = manifest.get("package") or {}
+              org = package.get("org")
+              name = package.get("name")
+              version = package.get("version")
+              if not all(isinstance(value, str) and value for value in (org, name, version)):
+                  raise SystemExit(f"{repo}: invalid [package] org/name/version")
+              coordinate = f"{org}/{name}"
+              identity = f"{coordinate}@{version}"
+              if coordinate in coordinates:
+                  raise SystemExit(f"duplicate package coordinate: {coordinate}")
+              if identity in versions:
+                  raise SystemExit(f"duplicate package version identity: {identity}")
+              coordinates.add(coordinate)
+              versions.add(identity)
+              publish = manifest.get("publish") or {}
+              tag_format = publish.get("tag_format") or "v{version}"
+              tag = tag_format.replace("{version}", version)
+              packages.append(
+                  {
+                      **source,
+                      "path": str(path),
+                      "org": org,
+                      "name": name,
+                      "version": version,
+                      "coordinate": coordinate,
+                      "identity": identity,
+                      "tag": tag,
+                  }
+              )
+
+          if missing:
+              raise SystemExit("missing .zpkg.toml: " + ", ".join(missing))
+          if len(packages) != 20:
+              raise SystemExit(f"expected 20 package manifests, got {len(packages)}")
+          pathlib.Path("evidence/packages.json").write_text(
+              json.dumps(packages, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          pathlib.Path("evidence/packages.tsv").write_text(
+              "".join(
+                  "\t".join(
+                      [
+                          row["repository"],
+                          row["sha"],
+                          row["path"],
+                          row["org"],
+                          row["name"],
+                          row["version"],
+                          row["tag"],
+                      ]
+                  )
+                  + "\n"
+                  for row in packages
+              ),
+              encoding="utf-8",
+          )
+          PY
+          jq -e 'length == 20' evidence/packages.json >/dev/null
+          cat evidence/packages.tsv
+
+      - name: Claim every package organization
+        shell: bash
+        run: |
+          set -euo pipefail
+          cut -f4 evidence/packages.tsv | sort -u \
+            | while IFS= read -r org; do
+                "$ZED" org claim "$org"
+              done
+
+      - name: Publish all 20 exact repository heads
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > evidence/publish.log
+          while IFS=$'\t' read -r repo sha path org name version tag; do
+            test "$(git -C "$path" rev-parse HEAD)" = "$sha"
+            test -z "$(git -C "$path" status --porcelain)"
+            git -C "$path" config user.name "Zed Batch Publisher"
+            git -C "$path" config user.email "zed-batch@example.invalid"
+            git -C "$path" tag --force "$tag" "$sha" >/dev/null
+            printf '== publish %s/%s@%s from %s@%s ==\n' \
+              "$org" "$name" "$version" "$repo" "$sha" | tee -a evidence/publish.log
+            (
+              cd "$path"
+              "$ZED" publish 2>&1
+            ) | tee -a evidence/publish.log
+            rm -rf "$path/.zed"
+            test -z "$(git -C "$path" status --porcelain)"
+          done < evidence/packages.tsv
+
+      - name: Verify metadata, downloads, hashes, and S3 objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/metadata evidence/artifacts
+          : > evidence/registry-verification.ndjson
+          while IFS=$'\t' read -r repo sha path org name version tag; do
+            metadata_path="evidence/metadata/${org}__${name}__${version}.json"
+            headers_path="evidence/artifacts/${org}__${name}__${version}.headers"
+            artifact_path="evidence/artifacts/${org}__${name}__${version}.artifact"
+            curl -fsS \
+              "$ZED_PKG_REGISTRY/v1/packages/$org/$name/versions/$version" \
+              -o "$metadata_path"
+            artifact_sha="$(jq -er '.sha256 | select(test("^[0-9a-f]{64}$"))' "$metadata_path")"
+            artifact_format="$(jq -er '.format' "$metadata_path")"
+            download_url="$(jq -er '.download_url' "$metadata_path")"
+            test "$(jq -r '.org' "$metadata_path")" = "$org"
+            test "$(jq -r '.name' "$metadata_path")" = "$name"
+            test "$(jq -r '.version' "$metadata_path")" = "$version"
+            test "$(jq -r '.yanked' "$metadata_path")" = "false"
+            curl -fsS -L -D "$headers_path" "$download_url" -o "$artifact_path"
+            test "$(sha256sum "$artifact_path" | awk '{print $1}')" = "$artifact_sha"
+            grep -Eiq '^location: http://127\.0\.0\.1:19000/' "$headers_path"
+            docker run --rm --network host \
+              --entrypoint /bin/sh \
+              quay.io/minio/mc:latest -ceu "
+                mc alias set zed-local http://127.0.0.1:19000 zedminio zedminio-secret >/dev/null
+                mc stat zed-local/zed-pkg-artifacts/artifacts/${artifact_sha}.${artifact_format} >/dev/null
+              "
+            jq -nc \
+              --arg repository "$repo" \
+              --arg source_sha "$sha" \
+              --arg org "$org" \
+              --arg name "$name" \
+              --arg version "$version" \
+              --arg artifact_sha256 "$artifact_sha" \
+              '{repository:$repository,source_sha:$source_sha,org:$org,name:$name,version:$version,artifact_sha256:$artifact_sha256,metadata:true,download:true,s3_object:true}' \
+              >> evidence/registry-verification.ndjson
+          done < evidence/packages.tsv
+          test "$(wc -l < evidence/registry-verification.ndjson)" -eq 20
+
+      - name: Install, uninstall, and frozen-reinstall every package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p consumers evidence/locks
+          : > evidence/install-verification.ndjson
+          index=0
+          while IFS=$'\t' read -r repo sha path org name version tag; do
+            index=$((index + 1))
+            consumer="consumers/$(printf '%02d' "$index")-${org}__${name}"
+            rm -rf "$ZED_PKG_HOME"
+            mkdir -p "$ZED_PKG_HOME" "$consumer"
+            (
+              cd "$consumer"
+              "$ZED" install "$org/$name@$version" \
+                --skip-manifest \
+                --install-mode copy \
+                --allow-ecosystem-mismatch
+              test -f .zpkg.lock
+              find zed_modules -type f -name .zpkg.toml -print -quit | grep -q .
+              cp .zpkg.lock "$GITHUB_WORKSPACE/evidence/locks/${org}__${name}.first.lock"
+              "$ZED" uninstall
+              test ! -d zed_modules || test -z "$(find zed_modules -mindepth 1 -print -quit)"
+              rm -rf "$ZED_PKG_HOME"
+              mkdir -p "$ZED_PKG_HOME"
+              "$ZED" install --frozen \
+                --skip-manifest \
+                --install-mode copy \
+                --allow-ecosystem-mismatch
+              cmp .zpkg.lock "$GITHUB_WORKSPACE/evidence/locks/${org}__${name}.first.lock"
+              find zed_modules -type f -name .zpkg.toml -print -quit | grep -q .
+              cp .zpkg.lock "$GITHUB_WORKSPACE/evidence/locks/${org}__${name}.frozen.lock"
+            )
+            jq -nc \
+              --arg repository "$repo" \
+              --arg source_sha "$sha" \
+              --arg org "$org" \
+              --arg name "$name" \
+              --arg version "$version" \
+              '{repository:$repository,source_sha:$source_sha,org:$org,name:$name,version:$version,install:true,uninstall:true,frozen_reinstall:true}' \
+              >> evidence/install-verification.ndjson
+          done < evidence/packages.tsv
+          test "$index" -eq 20
+          test "$(wc -l < evidence/install-verification.ndjson)" -eq 20
+
+      - name: Verify idempotent republish for the complete batch
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > evidence/republish.log
+          while IFS=$'\t' read -r repo sha path org name version tag; do
+            rm -rf "$path/.zed"
+            test -z "$(git -C "$path" status --porcelain)"
+            output="$(cd "$path" && "$ZED" publish 2>&1)"
+            printf '== %s/%s@%s ==\n%s\n' "$org" "$name" "$version" "$output" \
+              | tee -a evidence/republish.log
+            printf '%s\n' "$output" \
+              | grep -Eiq 'already published.*identical|identical sha256|skipping'
+          done < evidence/packages.tsv
+
+      - name: Build the immutable batch evidence summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+
+          evidence = pathlib.Path("evidence")
+          packages = json.loads((evidence / "packages.json").read_text())
+          registry = [
+              json.loads(line)
+              for line in (evidence / "registry-verification.ndjson").read_text().splitlines()
+              if line.strip()
+          ]
+          installs = [
+              json.loads(line)
+              for line in (evidence / "install-verification.ndjson").read_text().splitlines()
+              if line.strip()
+          ]
+          public_probe = []
+          for line in (evidence / "public-api-probe.tsv").read_text().splitlines():
+              if not line.strip():
+                  continue
+              url, status = line.split("\t", 1)
+              public_probe.append({"url": url, "status": status})
+
+          registry_by_identity = {
+              f"{row['org']}/{row['name']}@{row['version']}": row for row in registry
+          }
+          install_by_identity = {
+              f"{row['org']}/{row['name']}@{row['version']}": row for row in installs
+          }
+          merged = []
+          for package in packages:
+              identity = package["identity"]
+              merged.append(
+                  {
+                      **package,
+                      "artifact_sha256": registry_by_identity[identity]["artifact_sha256"],
+                      "metadata_verified": True,
+                      "download_verified": True,
+                      "s3_object_verified": True,
+                      "install_verified": install_by_identity[identity]["install"],
+                      "uninstall_verified": install_by_identity[identity]["uninstall"],
+                      "frozen_reinstall_verified": install_by_identity[identity]["frozen_reinstall"],
+                  }
+              )
+
+          summary = {
+              "schema": "zed.package-batch-certification/v1",
+              "package_count": len(merged),
+              "api_source_sha": "949b0872cf715b85ffc7e80a2a9e9cb9eb99efcf",
+              "cli_source_sha": "751358fe130e64b646844bc7d857c4cff215ca2d",
+              "metadata_database": "postgres/pgvector",
+              "artifact_backend": "s3-compatible/minio",
+              "public_api_probe": public_probe,
+              "all_published": all(row["metadata_verified"] for row in merged),
+              "all_downloaded": all(row["download_verified"] for row in merged),
+              "all_s3_objects_verified": all(row["s3_object_verified"] for row in merged),
+              "all_installed": all(row["install_verified"] for row in merged),
+              "all_uninstalled": all(row["uninstall_verified"] for row in merged),
+              "all_frozen_reinstalled": all(row["frozen_reinstall_verified"] for row in merged),
+              "packages": merged,
+          }
+          if summary["package_count"] != 20:
+              raise SystemExit("batch count is not 20")
+          required = (
+              "all_published",
+              "all_downloaded",
+              "all_s3_objects_verified",
+              "all_installed",
+              "all_uninstalled",
+              "all_frozen_reinstalled",
+          )
+          if not all(summary[key] for key in required):
+              raise SystemExit("one or more batch invariants are false")
+          (evidence / "batch-certification.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          jq -e '
+            .package_count == 20
+            and .all_published
+            and .all_downloaded
+            and .all_s3_objects_verified
+            and .all_installed
+            and .all_uninstalled
+            and .all_frozen_reinstalled
+          ' evidence/batch-certification.json >/dev/null
+          jq '{package_count,api_source_sha,cli_source_sha,artifact_backend,all_published,all_installed,all_frozen_reinstalled,public_api_probe}' \
+            evidence/batch-certification.json
+
+      - name: Collect bounded diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p evidence
+          cp "$RUNNER_TEMP/zed-api.log" evidence/zed-api.log 2>/dev/null || true
+          docker logs zed-minio > evidence/minio.log 2>&1 || true
+          find sources -maxdepth 2 -name .zpkg.toml -print \
+            > evidence/discovered-manifests.txt 2>&1 || true
+          find consumers -maxdepth 4 -type f -print \
+            > evidence/consumer-files.txt 2>&1 || true
+
+      - name: Upload 20-package certification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: zed-20-package-certification
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Stop API and object storage
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$RUNNER_TEMP/zed-api.pid"; then
+            kill "$(cat "$RUNNER_TEMP/zed-api.pid")" 2>/dev/null || true
+          fi
+          docker rm -f zed-minio >/dev/null 2>&1 || true
