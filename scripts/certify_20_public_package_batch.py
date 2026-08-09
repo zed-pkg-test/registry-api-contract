@@ -5,6 +5,8 @@ The private Shared Auth sources remain covered by their own organization tests.
 This release batch intentionally uses repositories that GitHub-hosted runners can
 clone without cross-organization credentials, while preserving the exact same
 preflight, publication, storage, and cold-install invariants.
+
+Current repair checkpoint: zed-pkg/zed-lock PR #15 is merged on its default branch.
 """
 
 from __future__ import annotations
