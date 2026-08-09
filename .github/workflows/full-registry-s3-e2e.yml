@@ -155,6 +155,7 @@ jobs:
           TOML
             printf '%s\n' "$name over Postgres and S3" >"$dir/payload.txt"
             printf '# %s\n' "$name" >"$dir/README.md"
+            printf '.zed/\n' >"$dir/.gitignore"
             git -C "$dir" init -q
             git -C "$dir" config user.name "Zed Registry E2E"
             git -C "$dir" config user.email "zed-registry-e2e@example.invalid"
