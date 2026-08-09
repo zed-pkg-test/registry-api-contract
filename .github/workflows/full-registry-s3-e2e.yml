@@ -129,7 +129,7 @@ jobs:
           set -euo pipefail
           zed org claim zed-e2e
           packages=(zed-lib-core zed-interfaces zed-lock zed-sync zed-clients zed-cli zed-api-server zed-web-server zed-infra zed-e2e zed-monorepo zed-vscode)
-          mkdir -p "$RUNNER_TEMP/packages" "$RUNNER_TEMP/consumer" "$RUNNER_TEMP/zed-home" "$RUNNER_TEMP/downloads"
+          mkdir -p "$RUNNER_TEMP/packages" "$RUNNER_TEMP/consumers" "$RUNNER_TEMP/zed-home" "$RUNNER_TEMP/downloads"
           : >"$RUNNER_TEMP/published.tsv"
           echo "ZED_PKG_HOME=$RUNNER_TEMP/zed-home" >>"$GITHUB_ENV"
           export ZED_PKG_HOME="$RUNNER_TEMP/zed-home"
@@ -191,14 +191,19 @@ jobs:
           set -euo pipefail
           packages=(zed-lib-core zed-interfaces zed-lock zed-sync zed-clients zed-cli zed-api-server zed-web-server zed-infra zed-e2e zed-monorepo zed-vscode)
           export ZED_PKG_HOME="$RUNNER_TEMP/zed-home"
-          cd "$RUNNER_TEMP/consumer"
+
           for name in "${packages[@]}"; do
-            zed install "zed-e2e/$name@0.1.0" --skip-manifest
+            consumer="$RUNNER_TEMP/consumers/$name"
+            mkdir -p "$consumer"
+            (
+              cd "$consumer"
+              zed install "zed-e2e/$name@0.1.0" --skip-manifest
+              grep -R "$name over Postgres and S3" zed_modules >/dev/null
+              test -f .zpkg.lock
+            )
           done
-          for name in "${packages[@]}"; do
-            grep -R "$name over Postgres and S3" zed_modules >/dev/null
-          done
-          test -f .zpkg.lock
+
+          cd "$RUNNER_TEMP/consumers/zed-lib-core"
           cp .zpkg.lock "$RUNNER_TEMP/frozen.lock"
           zed uninstall
           test ! -d zed_modules || test -z "$(find zed_modules -mindepth 1 -maxdepth 1 -print -quit)"
