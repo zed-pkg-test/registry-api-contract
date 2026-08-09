@@ -6,7 +6,9 @@ This release batch intentionally uses repositories that GitHub-hosted runners ca
 clone without cross-organization credentials, while preserving the exact same
 preflight, publication, storage, and cold-install invariants.
 
-Current repair checkpoint: zed-pkg/zed-lock PR #15 is merged on its default branch.
+The monorepo remains a composition package. Its pinned public Git submodules are
+materialized before packing; this does not start or deploy any submodule service,
+and the acceptance plane still runs only zed-api-server.rs plus zed-cli.
 """
 
 from __future__ import annotations
@@ -37,6 +39,48 @@ certification.REPOSITORIES = (
     "opto-sync/syncer.c",
     "opto-sync/syncer.rs",
 )
+
+_original_clone_roots = certification.clone_roots
+
+
+def clone_roots_with_pinned_submodules() -> list[certification.RootPackage]:
+    roots = _original_clone_roots()
+    for root in roots:
+        if not (root.path / ".gitmodules").is_file():
+            continue
+        print(f"== materialize pinned submodules for {root.repository} ==", flush=True)
+        certification.run(
+            ["git", "submodule", "sync", "--recursive"],
+            cwd=root.path,
+        )
+        certification.run(
+            [
+                "git",
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+                "--depth",
+                "1",
+            ],
+            cwd=root.path,
+        )
+        status = certification.run(
+            ["git", "submodule", "status", "--recursive"],
+            cwd=root.path,
+            echo=False,
+        )
+        uninitialized = [
+            line for line in status.splitlines() if line.startswith("-")
+        ]
+        if uninitialized:
+            raise certification.CertificationError(
+                f"{root.repository}: uninitialized submodules remain: {uninitialized}"
+            )
+    return roots
+
+
+certification.clone_roots = clone_roots_with_pinned_submodules
 
 
 if __name__ == "__main__":
