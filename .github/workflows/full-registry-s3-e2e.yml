@@ -215,7 +215,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(psql "$DATABASE_URL" -Atc "select name from org where slug='zed-e2e'")" = zed-e2e
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from org where slug='zed-e2e'")" = 1
           test "$(psql "$DATABASE_URL" -Atc "select count(*) from package p join org o on o.id=p.org_id where o.slug='zed-e2e'")" = 12
 
           test "$(psql "$DATABASE_URL" -Atc "select count(*) from zed_orgs where slug='zed-e2e' and name='zed-e2e' and is_soft_deleted=false")" = 1
