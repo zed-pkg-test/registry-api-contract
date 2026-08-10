@@ -1,6 +1,7 @@
 [build-system]
 requires=["setuptools>=83.0.0"]
 build-backend="setuptools.build_meta"
+
 [project]
 name="registry-api-contract-harness"
 version="0.1.0"
@@ -8,6 +9,13 @@ requires-python=">=3.11"
 dependencies=["PyYAML>=6.0.3,<7"]
 [project.optional-dependencies]
 test=["pytest>=9.1.1,<10"]
+
+# This repository is an executable acceptance harness, not a Python library.
+# Explicitly disable flat-layout package discovery so fixture directories such
+# as `contracts/` and the upstream `vendor/` tree can never be packaged.
+[tool.setuptools]
+packages=[]
+
 [tool.pytest.ini_options]
 addopts="-ra"
 testpaths=["tests"]
