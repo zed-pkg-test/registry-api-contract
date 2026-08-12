@@ -45,12 +45,12 @@ jobs:
 
     steps:
       - name: Check out the registry contract controller
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
       - name: Check out the exact registry API
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-api-server.rs
           ref: ${{ env.ZED_API_SHA }}
@@ -58,7 +58,7 @@ jobs:
           persist-credentials: false
 
       - name: Check out the exact Zed CLI
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-cli
           ref: ${{ env.ZED_CLI_SHA }}
