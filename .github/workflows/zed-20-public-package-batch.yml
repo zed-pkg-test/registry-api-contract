@@ -141,7 +141,7 @@ jobs:
           set -euo pipefail
           "$ZED_API" >"$RUNNER_TEMP/zed-api-public-batch.log" 2>&1 &
           echo $! >"$RUNNER_TEMP/zed-api-public-batch.pid"
-          for attempt in $(seq 1 90); do
+          for _ in $(seq 1 90); do
             if curl -fsS "$ZED_PKG_REGISTRY/healthz" >/dev/null; then
               exit 0
             fi
