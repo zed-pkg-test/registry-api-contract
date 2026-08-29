@@ -3,6 +3,7 @@ name: 20-public-package registry acceptance
 on:
   push:
     branches:
+      - main
       - agent/den-2788-20-package-batch
     paths:
       - .github/workflows/zed-20-public-package-batch.yml
