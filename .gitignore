@@ -19,3 +19,11 @@ tmp
 temp
 tmp/worktrees
 temp/worktrees
+
+# --- carried over from the grafted branch rescue/orphan-9d019325d425-make-the-rust-registry-standalone-and-ce ---
+/_apalache-out
+/.data
+/.env
+/.formal-artifacts
+/.formal-tools
+/target
