@@ -19,3 +19,11 @@ tmp
 temp
 tmp/worktrees
 temp/worktrees
+
+# --- carried over from the grafted branch rescue/orphan-8a8570a0e8e8-merge-remote-refactor-modularize-process ---
+/_apalache-out
+/.data
+/.env
+/.formal-artifacts
+/.formal-tools
+/target
