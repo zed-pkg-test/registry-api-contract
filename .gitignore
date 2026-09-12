@@ -27,3 +27,4 @@ temp/worktrees
 /.formal-artifacts
 /.formal-tools
 /target
+# --- carried over from the grafted branch rescue/orphan-9d019325d425-make-the-rust-registry-standalone-and-ce ---
