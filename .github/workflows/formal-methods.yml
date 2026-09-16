@@ -39,7 +39,7 @@ jobs:
           persist-credentials: false
 
       - name: Install the fmctl Rust toolchain
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@1.120.0
 
       - name: Install Node.js
         uses: actions/setup-node@v4
