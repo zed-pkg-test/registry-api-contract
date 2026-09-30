@@ -94,7 +94,7 @@ jobs:
           docker run -d --name zed-minio --network host \
             -e MINIO_ROOT_USER="$AWS_ACCESS_KEY_ID" \
             -e MINIO_ROOT_PASSWORD="$AWS_SECRET_ACCESS_KEY" \
-            quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z server /data --address :9000
+            minio/minio:RELEASE.2025-07-23T15-54-02Z server /data --address :9000
           for _ in $(seq 1 60); do
             curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null && break
             sleep 1
