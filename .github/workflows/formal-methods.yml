@@ -98,7 +98,7 @@ jobs:
 
       - name: Upload model-checker evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: zed-api-registry-formal-methods
           path: |
